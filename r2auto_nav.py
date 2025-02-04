@@ -121,7 +121,7 @@ class AutoNav(Node):
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         # print to file
-        # np.savetxt(mapfile, self.occdata)
+        np.savetxt(mapfile, self.occdata)
 
 
     def scan_callback(self, msg):
