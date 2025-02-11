@@ -32,10 +32,8 @@ try:
         # p.ChangeDutyCycle(12.5)  # 180 deg position
         # time.sleep(1)  # delay 1 second again ... ...
 
-        setAngle(90)
-        setAngle(270)  # This will give p.ChangeDutyCycle(17.5) which 
-                       # is invalid thus the servo wouldn't move from this command
-        setAngle(0)
+        setAngle(input())
+        
 
 except KeyboardInterrupt:
     p.stop()  # stop PWM
