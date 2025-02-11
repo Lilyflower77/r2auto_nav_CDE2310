@@ -87,6 +87,7 @@ def launch_solenoid():
         p.ChangeDutyCycle(duty)
         time.sleep(0.5)  # Allow servo time to reach position
         p.ChangeDutyCycle(0)  # Reset PWM to prevent jitter
+        time.sleep(0.5)
 
         # Launch solenoid
         GPIO.output(solenoid_pin, GPIO.HIGH)
