@@ -2,17 +2,12 @@
 import time
 import RPi.GPIO as GPIO
 
-def setAngle(angle):
-    if 0 <= angle <= 180:
-        p.ChangeDutyCycle(angle / 18 + 2.5)
-        time.sleep(2)
-
 # Set pin numbering convention
 # GPIO.setmode(GPIO.BOARD)    # number on circle
 GPIO.setmode(GPIO.BCM)        # number beside GPIO
 
 # Choose an appropriate PWM channel to be used to control the servo
-servo_pin = 18
+servo_pin = 40
 
 # Set the pin as an output
 GPIO.setup(servo_pin, GPIO.OUT)
