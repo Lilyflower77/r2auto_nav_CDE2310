@@ -4,7 +4,7 @@ import RPi.GPIO as GPIO
 
 # GPIO.setmode(GPIO.BOARD)    # number on circle
 GPIO.setmode(GPIO.BCM)  # number beside GPIO
-servo_pin = 40
+servo_pin = 21
 GPIO.setup(servo_pin, GPIO.OUT)
 
 def setPin(userInput):
