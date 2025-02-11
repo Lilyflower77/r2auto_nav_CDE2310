@@ -10,6 +10,8 @@ GPIO.setup(servo_pin, GPIO.OUT)
 def setPin(userInput):
     if userInput == 1:
         GPIO.output(servo_pin, GPIO.HIGH)
+        time.sleep(1)
+        GPIO.output(servo_pin, GPIO.LOW)
     else :
         GPIO.output(servo_pin, GPIO.LOW)
 
