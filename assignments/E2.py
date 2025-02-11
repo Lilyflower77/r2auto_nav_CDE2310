@@ -14,10 +14,12 @@ def setPin(userInput):
         GPIO.output(servo_pin, GPIO.LOW)
     else :
         GPIO.output(servo_pin, GPIO.LOW)
+        GPIO.output(servo_pin, GPIO.HIGH)
 
 try:
     while True:
         userInput = bool(input("Do you want to launch?"))
+        GPIO.output(servo_pin, GPIO.LOW)
         setPin(userInput)
 except KeyboardInterrupt:
     GPIO.cleanup()  # remove all setup
