@@ -16,5 +16,6 @@ def setPin(userInput):
 try:
     while True:
         userInput = bool(input("Do you want to launch?"))
+        setPin(userInput)
 except KeyboardInterrupt:
     GPIO.cleanup()  # remove all setup
