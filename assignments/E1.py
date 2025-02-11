@@ -1,40 +1,32 @@
-# The servo motor may be chosen to tilt the payload
 import time
 import RPi.GPIO as GPIO
 
-def setAngle(angle):
-    if 0 <= angle <= 180:
-        p.ChangeDutyCycle(angle / 18 + 2.5)
-        time.sleep(2)
-
-# Set pin numbering convention
-# GPIO.setmode(GPIO.BOARD)    # number on circle
-GPIO.setmode(GPIO.BCM)        # number beside GPIO
-
-# Choose an appropriate PWM channel to be used to control the servo
+# GPIO Setup
+GPIO.setmode(GPIO.BCM)
 servo_pin = 18
-
-# Set the pin as an output
 GPIO.setup(servo_pin, GPIO.OUT)
 
-# Initialize the servo to be controlled by PWM with 50 Hz frequency
-p = GPIO.PWM(servo_pin, 50)
+# Initialize PWM
+p = GPIO.PWM(servo_pin, 50)  # 50 Hz frequency
+p.start(7.5)  # 7.5% duty cycle -> 90 degrees
 
-# Set servo to 90 degrees as its starting position
-p.start(7.5)   # 7.5 refers to duty cycle of 7.5%
+def setAngle(angle):
+    """Moves the servo to a given angle."""
+    global p  # Ensure `p` is accessible
+    if 0 <= angle <= 180:
+        duty = angle / 18 + 2.5
+        p.ChangeDutyCycle(duty)
+        time.sleep(0.5)  # Allow servo time to reach position
+        p.ChangeDutyCycle(0)  # Reset PWM to prevent jitter
+    else:
+        print("Invalid angle! Must be between 0 and 180 degrees.")
 
 try:
     while True:
-        # p.ChangeDutyCycle(7.5)  # 90 deg position
-        # time.sleep(1)  # delay 1 second
-        # p.ChangeDutyCycle(2.5)  # 0 deg position
-        # time.sleep(1)  # delay 1 second again
-        # p.ChangeDutyCycle(12.5)  # 180 deg position
-        # time.sleep(1)  # delay 1 second again ... ...
-
-        setAngle(input())
-        
+        input_angle = int(input("Enter angle (0-180): "))
+        setAngle(input_angle)
 
 except KeyboardInterrupt:
-    p.stop()  # stop PWM
-    GPIO.cleanup()  # remove all setup
+    p.stop()
+    GPIO.cleanup()
+    print("\nServo control stopped, GPIO cleaned up.")
