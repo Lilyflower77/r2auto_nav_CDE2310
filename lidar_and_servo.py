@@ -86,7 +86,7 @@ def launch_solenoid():
         duty = angle / 18 + 2.5
         p.ChangeDutyCycle(duty)
         time.sleep(0.5)  # Allow servo time to reach position
-        p.ChangeDutyCycle(0)  # Reset PWM to prevent jitter
+        p.ChangeDutyCycle(2.5)  # Reset PWM to prevent jitter
         time.sleep(0.5)
 
         # Launch solenoid
