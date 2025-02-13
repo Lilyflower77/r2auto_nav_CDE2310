@@ -49,7 +49,7 @@ class Scanner(Node):
         self.get_logger().info('Shortest distance at %i degrees' % lr2i2)
         if shortest_distance_front is not None:
             self.get_logger().info(f'Shortest distance in 0-5 degrees: {shortest_distance_front:.3f} meters')
-            if shortest_distance_front < 1.0:
+            if shortest_distance_front < 0.25:
                 launch_solenoid()
 
     def get_shortest_distance_front(self, laser_range, angle_min, angle_increment):
@@ -79,15 +79,15 @@ def main(args=None):
         print("Keyboard Interrupt detected. Cleaning up...")
     finally:
         scanner.destroy_node()
-        rclpy.shutdown()
-        cleanup_gpio(None, None)
+        cleanup_gpio(None,None)
+        #rclpy.shutdown()
+        #cleanup_gpio(None, None)
 
 def launch_solenoid():
         duty = angle / 18 + 2.5
         p.ChangeDutyCycle(duty)
         time.sleep(0.5)  # Allow servo time to reach position
-        p.ChangeDutyCycle(0)  # Reset PWM to prevent jitter
-        time.sleep(0.5)
+        p.ChangeDutyCycle(2.5)  # Reset PWM to prevent jitter
 
         # Launch solenoid
         GPIO.output(solenoid_pin, GPIO.HIGH)
