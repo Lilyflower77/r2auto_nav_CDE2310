@@ -41,6 +41,9 @@ class Scanner(Node):
         
         # Get shortest distance in the range of 0 to 5 degrees
         shortest_distance_front = self.get_shortest_distance_front(laser_range, msg.angle_min, msg.angle_increment)
+        print(laser_range)
+        print(msg.angle_min)
+        print(msg.angle_increment)
 
         # find index with minimum value
         lr2i = np.nanargmin(laser_range)
