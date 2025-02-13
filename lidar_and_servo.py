@@ -57,8 +57,8 @@ class Scanner(Node):
 
     def get_shortest_distance_front(self, laser_range, angle_min, angle_increment):
         # Convert angle range to indices
-        start_angle = 0  # 0 degrees
-        end_angle = 5  # 5 degrees
+        start_angle = 0  # 0 randians
+        end_angle = 5 * 3.14 / 180 # 5 degrees
         
         start_index = int((start_angle - angle_min) / angle_increment)
         end_index = int((end_angle - angle_min) / angle_increment)
