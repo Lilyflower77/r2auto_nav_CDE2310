@@ -17,7 +17,7 @@ test_point = 18
 GPIO.setup(test_point , GPIO.OUT)
 
 # Initialise pwm object with 1 kHz frequency
-pwm = GPIO.PWM(test_point, 1000)
+pwm = GPIO.PWM(test_point, 50)
 pwm.start(0)
 
 # Begin pwm experiment
