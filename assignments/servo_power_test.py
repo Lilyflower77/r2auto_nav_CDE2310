@@ -1,36 +1,38 @@
-# EG2310
-# This code is used to generate a pwm signal
-
-import time
 import RPi.GPIO as GPIO
+import time
 
-# Set pin numbering convention
-# Can't use both, please choose one and comment away the other
+# GPIO Setup
 GPIO.setmode(GPIO.BCM)
-#GPIO.setmode(GPIO.BOARD)
+servo_pin = 18
+GPIO.setup(servo_pin, GPIO.OUT)
 
-# Set the pin to generate the pwm signal
-# This pin needs to be one that is on a PWM channel
-test_point = 18
+# Initialize PWM
+p = GPIO.PWM(servo_pin, 50)  # 50 Hz frequency
+p.start(2.5)  # Start at minimum position
 
-# Set the pin as an output
-GPIO.setup(test_point , GPIO.OUT)
+# Define servo movement limits
+MIN_DUTY_CYCLE = 2.5  # 0 degrees
+MAX_DUTY_CYCLE = 12.5  # 180 degrees
+STEP_SIZE = 0.5  # Step increment for duty cycle
+STEP_DELAY = 0.1  # Delay between each step
 
-# Initialise pwm object with 1 kHz frequency
-pwm = GPIO.PWM(test_point, 50)
-pwm.start(0)
+try:
+    while True:
+        # Move from min to max
+        for duty in np.arange(MIN_DUTY_CYCLE, MAX_DUTY_CYCLE + STEP_SIZE, STEP_SIZE):
+            p.ChangeDutyCycle(duty)
+            time.sleep(STEP_DELAY)
+        
+        time.sleep(0.5)  # Pause at max position
 
-# Begin pwm experiment
+        # Move from max to min
+        for duty in np.arange(MAX_DUTY_CYCLE, MIN_DUTY_CYCLE - STEP_SIZE, -STEP_SIZE):
+            p.ChangeDutyCycle(duty)
+            time.sleep(STEP_DELAY)
+        
+        time.sleep(0.5)  # Pause at min position
 
-print("Start")
-
-for i in range(0, 100, 1):
-    pwm.ChangeDutyCycle(i)
-    print("Brightness is ", i, "%")
-    time.sleep(0.2)
-else:
-    print("Finished")
-
-# End the script and exit
-pwm.stop()
-GPIO.cleanup()
+except KeyboardInterrupt:
+    print("Stopping...")
+    p.stop()
+    GPIO.cleanup()
