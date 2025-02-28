@@ -66,6 +66,8 @@ class Occupy(Node):
         self.tfListener = tf2_ros.TransformListener(self.tfBuffer, self)
 
     def listener_callback(self, msg):
+
+        self.get_logger().info('Received map with width: %i height: %i' % (msg.info.width, msg.info.height))
         # create numpy array
         occdata = np.array(msg.data)
         # compute histogram to identify bins with -1, values between 0 and below 50, 

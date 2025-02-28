@@ -37,6 +37,7 @@ class Scanner(Node):
         laser_range[laser_range==0] = np.nan
         # find index with minimum value
         lr2i = np.nanargmin(laser_range)
+        lr2i = lr2i * 360 / 230
 
         # log the info
         self.get_logger().info('Shortest distance at %i degrees' % lr2i)
