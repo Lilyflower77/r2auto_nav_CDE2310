@@ -114,7 +114,7 @@ class AutoNav(Node):
         self.shortest_path = []
         self.distance_to_goal = 0
 
-        self.THRESHOLD = 100
+        self.THRESHOLD = 80
 
         #sharing variable
         self.reach_target = False
@@ -413,7 +413,11 @@ class AutoNav(Node):
         
         if(self.contains_obstacle() or self.reach_target):
             start = self.get_robot_grid_position()
-            end = self.detect_frontiers(start)
+
+            if start[0] is None or start[1] is None:
+                self.get_logger().error("Waiting for valid robot position.")
+                return None, None
+            end = self.detect_closest_frontier(start)
             #self.get_logger().info(f"End: {end}")
             #self.get_logger().info(f"Occupancy value at start: {self.occdata[start[0], start[1]]}")
             #self.get_logger().info(f"Occupancy value at end: {self.occdata[end[0], end[1]]}")
@@ -476,13 +480,22 @@ class AutoNav(Node):
         return self.distance_to_goal , self.shortest_path
 
 
+
     def is_frontier(self, map_data, x, y):
-        if map_data[x, y] >= self.THRESHOLD or map_data[x,y] == 0:  # Ensure it's free space
+        """
+        Determines if a given cell (x, y) is a frontier.
+        A frontier is a free space adjacent to an unknown cell.
+
+        :param map_data: 2D NumPy array representing the occupancy grid.
+        :param x: X coordinate of the cell.
+        :param y: Y coordinate of the cell.
+        :return: True if it's a frontier, False otherwise.
+        """
+        if map_data[x, y] >= self.THRESHOLD:  # Ensure it's free space
             return False
 
-        # Check 4-connected neighbors ,cannot use 8 because of uneven weight
+        # Check 4-connected neighbors (left, right, up, down)
         neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                    #(-1, -1), (-1, 1), (1, -1), (1, 1)
 
         for dx, dy in neighbors:
             nx, ny = x + dx, y + dy
@@ -492,21 +505,42 @@ class AutoNav(Node):
         return False
 
 
-    def detect_frontiers(self, start):
+    def detect_closest_frontier(self, robot_pos):
         """
-        Identifies all frontier cells in the occupancy grid.
+        Uses BFS to detect the closest frontier by exploring free space from the robot's position.
 
-        :param map_data: 2D numpy array representing the occupancy grid.
-        :return: List of (x, y) coordinates of frontier cells.
+        :param robot_pos: (x, y) coordinates of the robot's current position.
+        :return: The (x, y) coordinates of the closest frontier.
         """
-        frontiers = []
-        for x in range(1, self.occdata.shape[0] - 1):
-            for y in range(1, self.occdata.shape[1] - 1):
-                if self.is_frontier(self.occdata, x, y):
-                    #self.get_logger().info(f"Frontier detected at ({x}, {y})")
-                    return x,y
-        return None, None
-                
+        
+        queue = deque([robot_pos])  # BFS queue initialized with the robot's position
+        visited = set()  # Keep track of visited cells
+
+        while queue:
+            x, y = queue.popleft()  # Pop the front of the queue (FIFO behavior)
+
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+
+            # If this is a frontier, return it (BFS guarantees it's the closest)
+            if self.is_frontier(self.occdata, x, y):
+                return x, y
+
+            # Check 4-connected neighbors (left, right, up, down)
+            neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dx, dy in neighbors:
+                nx, ny = x + dx, y + dy
+
+                if (0 <= nx < self.occdata.shape[0] and 
+                    0 <= ny < self.occdata.shape[1] and 
+                    0 <= self.occdata[nx, ny] < self.THRESHOLD and
+                    (nx, ny) not in visited):
+                    
+                    queue.append((nx, ny))  # Push free space into queue
+
+        return None, None  # No frontier found
+            
 
     def move_to_position(self, target_x, target_y):
         """
@@ -561,11 +595,17 @@ class AutoNav(Node):
 
         angle_deg = math.degrees(angle_to_target)  # Convert to degrees
         
+        cur_grid_x, cur_grid_y = self.get_robot_grid_position()
+        self.get_logger().info(f"Current position: ({cur_grid_x}, {cur_grid_y})")
+        if angle_deg < 0:
+            self.get_logger().info(f"Moving to ({grid_x}, {grid_y}) by rotating {abs(angle_deg)} degrees anticlockwise")
+        else: 
+            self.get_logger().info(f"Moving to ({grid_x}, {grid_y}) by rotating {abs(angle_deg)} degrees clockwise")
+
+
         # Ensure the angle is in the range [0, 360)
         if angle_deg < 0:
             angle_deg += 360
-
-        self.get_logger().info(f"Moving to ({grid_x}, {grid_y}) by rotating {angle_deg} degrees")
         # rotate to that direction
         self.rotatebot(float(angle_deg))
 
