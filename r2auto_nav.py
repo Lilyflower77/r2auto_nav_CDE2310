@@ -169,11 +169,31 @@ class AutoNav(Node):
         np.savetxt(mapfile, self.occdata)
 
         for node in self.visited_frontiers:
-            if(self.occdata[node[0], node[1]] != 101):
-                self.occdata[node[0], node[1]] = 1
+            if(self.occdata[node[1], node[0]] != 101):
+                self.occdata[node[1], node[0]] = 1
+        
+        radius = 2
+        height, width = self.occdata.shape
 
-        rows, cols = self.occdata.shape
-        print(f"Occupancy Grid Size: {rows} x {cols}")
+        # Create a copy to store expanded obstacles
+        expanded_occdata = self.occdata.copy()
+
+        for y in range(height):
+            for x in range(width):
+                if self.occdata[y, x] == 101:  # Only use the original grid
+                    for dy in range(-radius, radius + 1):
+                        for dx in range(-radius, radius + 1):
+                            nx, ny = x + dx, y + dy  # New x, y coordinates
+                            if 0 <= ny < height and 0 <= nx < width:  # Bounds check
+                                expanded_occdata[ny, nx] = 101  # Mark as occupied
+
+        # Apply the expanded costmap
+        self.occdata = expanded_occdata
+
+                    
+
+        #rows, cols = self.occdata.shape
+        #print(f"Occupancy Grid Size: {rows} x {cols}")
 
         if np.any(self.occdata == 0):
             pass
@@ -360,7 +380,7 @@ class AutoNav(Node):
         """
         
         # Check if the current cell is occupied or unknown
-        if map_data[x, y] == 101 or map_data[x, y] == 0:
+        if map_data[y, x] == 101 or map_data[y, x] == 0:
             return False  # This cell is either occupied (101) or unknown (0)
 
         # Ensure that we are not considering the robot's current position
@@ -372,8 +392,8 @@ class AutoNav(Node):
         neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
         for dx, dy in neighbors:
             nx, ny = x + dx, y + dy
-            if 0 <= nx < map_data.shape[0] and 0 <= ny < map_data.shape[1]:
-                if map_data[nx, ny] == 0:  # If a neighbor is unknown
+            if 0 <= ny < map_data.shape[0] and 0 <= nx < map_data.shape[1]:
+                if map_data[ny, nx] == 0:  # If a neighbor is unknown
                     return True  # This cell is a frontier
 
         return False  # No adjacent unknown cells, not a frontier
@@ -409,14 +429,14 @@ class AutoNav(Node):
                     for dx in range(-1, 2):  # Covers [-1, 0, 1]
                         for dy in range(-1, 2):  # Covers [-1, 0, 1]
                             nx, ny = x + dx, y + dy
-                            if 0 <= nx < self.occdata.shape[0] and 0 <= ny < self.occdata.shape[1]:
+                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
                                 self.visited_frontiers.add((nx, ny))
                     return (x, y)
 
             # Explore 8-connected neighbors
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]:
                 nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= nx < self.occdata.shape[0] and 0 <= ny < self.occdata.shape[1]:
+                if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
                     visited.add((nx, ny))
                     queue.append((nx, ny))
         print(count)
@@ -579,6 +599,7 @@ class AutoNav(Node):
         time.sleep(10)
         self.stopbot()
     
+
     def plot_func(self): 
         
         costmap = np.full(self.occdata.shape, 0, dtype=np.uint8)  # Initialize all as free space
@@ -628,7 +649,6 @@ class AutoNav(Node):
         # Assuming self.occdata is a 2D NumPy array
         # self.occdata = np.random.choice([0, 1, 101], size=(50, 50), p=[0.3, 0.5, 0.2])
         # plot_occupancy_grid(self.occdata)
-
 
 
     def send_nav_goal(self, x, y, yaw=0.0):
