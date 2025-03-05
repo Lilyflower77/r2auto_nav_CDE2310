@@ -19,7 +19,7 @@ from geometry_msgs.msg import Twist
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid
-from sensor_msgs.msg import Temperature
+#from sensor_msgs.msg import Temperature
 import numpy as np
 import math
 import cmath
@@ -116,13 +116,16 @@ class AutoNav(Node):
         self.scan_subscription  # prevent unused variable warning
         self.laser_range = np.array([])
 
+        '''
         self.subscription = self.create_subscription(
             Temperature,
             '/temperature',
             self.temp_callback,
             10
         )
+        '''
 
+        self.occ_callback_called = False
 
         plt.ion()
         self.fig, self.ax = plt.subplots()
@@ -165,14 +168,15 @@ class AutoNav(Node):
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         #self.get_logger().info(f"Unique values in occupancy grid: {np.unique(self.occdata)}")
-        # print to fil
+        # print to file
         np.savetxt(mapfile, self.occdata)
 
         for node in self.visited_frontiers:
             if(self.occdata[node[1], node[0]] != 101):
                 self.occdata[node[1], node[0]] = 1
         
-        radius = 2
+        
+        padding = 3
         height, width = self.occdata.shape
 
         # Create a copy to store expanded obstacles
@@ -181,17 +185,16 @@ class AutoNav(Node):
         for y in range(height):
             for x in range(width):
                 if self.occdata[y, x] == 101:  # Only use the original grid
-                    for dy in range(-radius, radius + 1):
-                        for dx in range(-radius, radius + 1):
+                    for dy in range(-padding, padding + 1):
+                        for dx in range(-padding, padding + 1):
                             nx, ny = x + dx, y + dy  # New x, y coordinates
                             if 0 <= ny < height and 0 <= nx < width:  # Bounds check
                                 expanded_occdata[ny, nx] = 101  # Mark as occupied
-
         # Apply the expanded costmap
         self.occdata = expanded_occdata
-
-                    
-
+        
+               
+        self.occ_callback_called = True
         #rows, cols = self.occdata.shape
         #print(f"Occupancy Grid Size: {rows} x {cols}")
 
@@ -200,7 +203,7 @@ class AutoNav(Node):
         else:
             self.get_logger().info("No unknown cells found in the occupancy grid.")
 
-        self.plot_func()
+        #self.plot_func()
         
         # 0 = Unknown
         # 1 - 99 = Free Space
@@ -549,8 +552,13 @@ class AutoNav(Node):
     def dijk_mover(self):
         try:
             while rclpy.ok():
+                '''
+                #heavy slows it down but update map data regularly
+                while not self.occ_callback_called:
+                    rclpy.spin_once(self)
+                self.occ_callback_called = False
+                '''
                 rclpy.spin_once(self)
-
                 # Get the current position of the robot
                 start = self.get_robot_grid_position()
 
@@ -668,12 +676,13 @@ class AutoNav(Node):
         
         # Send goal asynchronously
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
-
+        
         # Wait for the result to be completed
         rclpy.spin_until_future_complete(self, send_goal_future)
 
         # Check if the goal was successfully completed
         result = send_goal_future.result()
+
         if result and result.status == 2:  # Status 2 means goal succeeded
             self.get_logger().info("Goal successfully reached!")
             return True  # Confirmation received, goal reached successfully
