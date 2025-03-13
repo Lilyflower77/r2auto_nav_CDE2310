@@ -41,6 +41,9 @@ class Scanner(Node):
         
         # Get shortest distance in the range of 0 to 5 degrees
         shortest_distance_front = self.get_shortest_distance_front(laser_range, msg.angle_min, msg.angle_increment)
+        print(laser_range)
+        print(msg.angle_min)
+        print(msg.angle_increment)
 
         # find index with minimum value
         lr2i = np.nanargmin(laser_range)
@@ -49,13 +52,13 @@ class Scanner(Node):
         self.get_logger().info('Shortest distance at %i degrees' % lr2i2)
         if shortest_distance_front is not None:
             self.get_logger().info(f'Shortest distance in 0-5 degrees: {shortest_distance_front:.3f} meters')
-            if shortest_distance_front < 1.0:
+            if shortest_distance_front < 0.25:
                 launch_solenoid()
 
     def get_shortest_distance_front(self, laser_range, angle_min, angle_increment):
         # Convert angle range to indices
-        start_angle = 0  # 0 degrees
-        end_angle = 5  # 5 degrees
+        start_angle = 0  # 0 randians
+        end_angle = 5 * 3.14 / 180 # 5 degrees
         
         start_index = int((start_angle - angle_min) / angle_increment)
         end_index = int((end_angle - angle_min) / angle_increment)
@@ -79,15 +82,16 @@ def main(args=None):
         print("Keyboard Interrupt detected. Cleaning up...")
     finally:
         scanner.destroy_node()
-        rclpy.shutdown()
-        cleanup_gpio(None, None)
+        cleanup_gpio(None,None)
+        #rclpy.shutdown()
+        #cleanup_gpio(None, None)
 
 def launch_solenoid():
         duty = angle / 18 + 2.5
         p.ChangeDutyCycle(duty)
         time.sleep(0.5)  # Allow servo time to reach position
         p.ChangeDutyCycle(2.5)  # Reset PWM to prevent jitter
-        time.sleep(0.5)
+
 
         # Launch solenoid
         GPIO.output(solenoid_pin, GPIO.HIGH)
