@@ -18,17 +18,19 @@ class navigationNodes(Node):
     # Publisher
     def __init__(self):
         super().__init__('navigationNodes')
+        self.lock = threading.Lock()
 
-class navigationNodes(Node):
+class launcherNode(Node):
     def __init__(self):
         super().__init__('launcherNode')
+        self.lock = threading.Lock()
 
 
-def main_control_loop(node):
+def main_control_loop(navigationNodes, launcherNode):
 
-
+    
     while rclpy.ok():
-        with node.lock: # to prevent race condition so control loop and callback don't access the same variable at the same time
+        with navigationNodes.lock: # to prevent race condition
 
             return 
         
