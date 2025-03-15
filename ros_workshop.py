@@ -18,12 +18,13 @@ occ_bins = [-1, 0, 100, 101]
 
 
 # Look at these constants! You have to use these for your project 
-stop_distance = 0.5
+stop_distance = 200 # distance in mm
 
 
 def main_control_loop(navigationNodes):
 
-    
+    flag = True
+
     while rclpy.ok():
         with navigationNodes.lock: # to prevent race condition
             ############################   WRITE YUR CODE HERE   ############################
@@ -34,20 +35,24 @@ def main_control_loop(navigationNodes):
             right_distance = navigationNodes.get_right_distance()
             # Get the distance to the front wall
             front_distance = navigationNodes.get_front_distance()
-            print('Left distance: ', left_distance)
-            print('Right distance: ', right_distance)
-            print('Front distance: ', front_distance)
+            # print('Left distance: ', left_distance)
+            # print('Right distance: ', right_distance)
+            # print('Front distance: ', front_distance)
 
             print('-----------------------------------') 
-            navigationNodes.moveforward()
-            # if the distance to the front wall is less than the stop distance, stop the robot
-            if front_distance < stop_distance:
-                navigationNodes.stopbot()
+            
+            while flag:
+                navigationNodes.moveforward()
+                if front_distance < stop_distance: 
+                    navigationNodes.get_logger().info('Front distance: %f' % front_distance)
+                    flag = False
+                    navigationNodes.stopbot()
+                    break
 
             navigationNodes.rotatebot(90)
             navigationNodes.rotatebot(-90)
 
-    time.sleep(0.1) # run at 10hz to prevent the control loop from running too fast
+    time.sleep(0.2) # run at 10hz to prevent the control loop from running too fast
     return 
 
 
@@ -123,7 +128,7 @@ class navigationNodes(Node):
         # create numpy array
         self.laser_range = np.array(msg.ranges)
         # replace 0's with nan
-        self.laser_range[self.laser_range==0] = np.nan
+        self.laser_range[self.laser_range==0] = np.nan 
 
     def rotatebot(self, rot_angle):
         self.get_logger().info('In rotatebot')
@@ -177,7 +182,7 @@ class navigationNodes(Node):
         self.publisher_.publish(twist)
 
     def moveforward(self):
-        self.get_logger().info('In moveforward')
+        # self.get_logger().info('In moveforward')
         # create Twist object
         twist = Twist()
         # set linear speed
@@ -234,6 +239,8 @@ def main(args=None):
         navigationNode.get_logger().info('Keyboard interrupt detected. Shutting down...')
     finally:
         # cleanup
+        navigationNode.stopbot()
+        time.sleep(1)
         navigationNode.destroy_node()
 
 
