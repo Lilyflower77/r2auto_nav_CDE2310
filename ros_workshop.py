@@ -18,7 +18,7 @@ rotatechange = 0.1
 speedchange = 0.05
 occ_bins = [-1, 0, 100, 101]
 
-stop_distance = 200  # distance in mm
+stop_distance = 0.2  # distance in mm
 
 def main_control_loop(navigationNode):
     """
@@ -28,13 +28,13 @@ def main_control_loop(navigationNode):
     flag = True
 
     while rclpy.ok():
-        with navigationNode.lock:
-            left_distance = navigationNode.get_left_distance()
-            right_distance = navigationNode.get_right_distance()
-            # We read front_distance once here for debugging
-            front_distance = navigationNode.get_front_distance()
-            print('-----------------------------------')
-            print(f"Initial front_distance: {front_distance}")
+        # with navigationNode.lock:
+        #     left_distance = navigationNode.get_left_distance()
+        #     right_distance = navigationNode.get_right_distance()
+        #     # We read front_distance once here for debugging
+        #     front_distance = navigationNode.get_front_distance()
+        #     print('-----------------------------------')
+        #     print(f"Initial front_distance: {front_distance}")
 
         # We only enter this loop while flag is True
         while flag and rclpy.ok():
@@ -61,8 +61,7 @@ def main_control_loop(navigationNode):
         navigationNode.rotatebot(90)
         navigationNode.rotatebot(-90)
 
-        # Sleep so we eventually re-iterate the outer loop
-        time.sleep(0.2)
+        time.sleep(0.2) # run at 20hz to prevent the control loop from running too fast
     return
 
 class navigationNodes(Node):
@@ -141,15 +140,12 @@ class navigationNodes(Node):
 
     def rotatebot(self, rot_angle):
         with self.lock:
-            self.get_logger().info('In rotatebot')
-
             current_yaw = self.yaw
             c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
             target_yaw = current_yaw + math.radians(rot_angle)
             c_target_yaw = complex(math.cos(target_yaw), math.sin(target_yaw))
 
             self.c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
-            self.target_yaw = c_target_yaw
 
             # Start rotating
             twist = Twist()
@@ -157,33 +153,26 @@ class navigationNodes(Node):
             twist.angular.z = self.c_change_dir * rotatechange
             self.publisher_.publish(twist)
 
-            self.get_logger().info(
-                f'Starting rotation to target: {math.degrees(math.atan2(c_target_yaw.imag, c_target_yaw.real))} degrees'
-            )
+        # Now busy-wait until done
+        rate = 0.05  # 50 ms
+        while rclpy.ok():
+            with self.lock:
+                current_yaw = self.yaw
+                c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
+                c_change = target_yaw / c_yaw
+                c_dir_diff = np.sign(c_change.imag)
 
-            # Create a timer to monitor the rotation state
-            self.rotation_timer = self.create_timer(0.05, self.check_rotation)
+                if self.c_change_dir * c_dir_diff <= 0:
+                    # We've crossed the target
+                    break
+            
+            time.sleep(rate)
 
-    def check_rotation(self):
+        # Stop rotation when done
         with self.lock:
-            current_yaw = self.yaw
-            c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-            c_change = self.target_yaw / c_yaw
-            c_dir_diff = np.sign(c_change.imag)
-
-            self.get_logger().info(f'Current Yaw: {math.degrees(current_yaw)} degrees')
-
-            # If we've passed the target
-            if self.c_change_dir * c_dir_diff <= 0:
-                self.get_logger().info('Rotation complete')
-
-                # Stop rotation
-                twist = Twist()
-                twist.angular.z = 0.0
-                self.publisher_.publish(twist)
-
-                # Stop the timer
-                self.rotation_timer.cancel()
+            twist = Twist()
+            twist.angular.z = 0.0
+            self.publisher_.publish(twist)
 
     def stopbot(self):
         with self.lock:
