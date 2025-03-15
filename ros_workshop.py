@@ -67,7 +67,7 @@ class navigationNodes(Node):
         self.pitch = 0
         self.yaw = 0
         
-        self.occupancy_subscription = self.create_subscription(OccupancyGrid, 'map', self.occupancy_callback, qos_profile_sensor_data)
+        self.occupancy_subscription = self.create_subscription(OccupancyGrid, 'map', self.occ_callback, qos_profile_sensor_data)
         self.occdata = np.array([])       
         self.scan_subscription = self.create_subscription(LaserScan, 'scan', self.scan_callback, qos_profile_sensor_data)
         self.laser_range = np.array([])
@@ -195,20 +195,29 @@ class navigationNodes(Node):
         self.publisher_.publish(twist)
 
     def get_left_distance(self):
-        # get the distance to the left wall
-        left_distance = np.nanmin(self.laser_range[80:100])
-        return left_distance
-    
-    def get_right_distance(self):
-        # get the distance to the right wall
-        right_distance = np.nanmin(self.laser_range[260:280])
-        return right_distance
-    
-    def get_front_distance(self):
-        # get the distance to the front wall
-        front_distance = np.nanmin(self.laser_range[0:10] + self.laser_range[350:359])
-        return front_distance
+        if self.laser_range.size == 0:
+            return float('inf')  # No data → treat as open path
+        left_distance = self.laser_range[80:100]
+        if left_distance.size == 0 or np.all(np.isnan(left_distance)):
+            return float('inf')
+        return np.nanmin(left_distance)
 
+    def get_right_distance(self):
+        if self.laser_range.size == 0:
+            return float('inf')
+        right_distance = self.laser_range[260:280]
+        if right_distance.size == 0 or np.all(np.isnan(right_distance)):
+            return float('inf')
+        return np.nanmin(right_distance)
+
+    def get_front_distance(self):
+        if self.laser_range.size == 0:
+            return float('inf')
+        # Combine front readings (some LIDAR report front at 0 and 359 degrees)
+        front_distance = np.concatenate((self.laser_range[0:10], self.laser_range[350:359]))
+        if front_distance.size == 0 or np.all(np.isnan(front_distance)):
+            return float('inf')
+        return np.nanmin(front_distance)
 
 
 def main(args=None):
@@ -222,7 +231,7 @@ def main(args=None):
     ros_thread.start() # starts the thread
 
     # Start the main control loop
-    control_thread = threading.Thread(target=main_control_loop, daemon=True)
+    control_thread = threading.Thread(target=main_control_loop, args=(navigationNode,), daemon=True)
     control_thread.start() # starts the thread
 
     try:
