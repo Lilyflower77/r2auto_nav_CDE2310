@@ -128,50 +128,43 @@ class navigationNodes(Node):
     def rotatebot(self, rot_angle):
         self.get_logger().info('In rotatebot')
 
-        # Get current yaw angle
         current_yaw = self.yaw
         c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-
-        # Calculate desired yaw
         target_yaw = current_yaw + math.radians(rot_angle)
         c_target_yaw = complex(math.cos(target_yaw), math.sin(target_yaw))
 
-        # Set the rotation direction based on shortest path
-        c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
+        self.c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
+        self.target_yaw = c_target_yaw
 
         # Start rotating
         twist = Twist()
         twist.linear.x = 0.0
-        twist.angular.z = c_change_dir * rotatechange
+        twist.angular.z = self.c_change_dir * rotatechange
         self.publisher_.publish(twist)
 
         self.get_logger().info(f'Starting rotation to target: {math.degrees(math.atan2(c_target_yaw.imag, c_target_yaw.real))} degrees')
 
-        # Blocking loop until the target yaw is reached
-        while True:
-            # Allow callbacks to update the yaw value
-            rclpy.spin_once(self)
+        # Create a timer to monitor the rotation state
+        self.rotation_timer = self.create_timer(0.05, self.check_rotation)
 
-            # Get current yaw
-            current_yaw = self.yaw
-            c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
+    def check_rotation(self):
+        current_yaw = self.yaw
+        c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
+        c_change = self.target_yaw / c_yaw
+        c_dir_diff = np.sign(c_change.imag)
 
-            # Get difference between target and current yaw
-            c_change = c_target_yaw / c_yaw
-            c_dir_diff = np.sign(c_change.imag)
+        self.get_logger().info(f'Current Yaw: {math.degrees(current_yaw)} degrees')
 
-            self.get_logger().info(f'Current Yaw: {math.degrees(current_yaw)} degrees')
+        if self.c_change_dir * c_dir_diff <= 0:
+            self.get_logger().info('Rotation complete')
 
-            # Stop when the rotation direction reverses (meaning target is reached)
-            if c_change_dir * c_dir_diff <= 0:
-                self.get_logger().info('Rotation complete')
-                break
+            # Stop rotation
+            twist = Twist()
+            twist.angular.z = 0.0
+            self.publisher_.publish(twist)
 
-        # Stop the rotation
-        twist.angular.z = 0.0
-        self.publisher_.publish(twist)
-
-        self.get_logger().info('Rotation stopped')
+            # Stop the timer
+            self.rotation_timer.cancel()
 
 
     def stopbot(self):
