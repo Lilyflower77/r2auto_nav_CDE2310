@@ -26,15 +26,27 @@ def main_control_loop(navigationNode):
     handles communication in a separate thread.
     """
     flag = True
+    def right():
+        return navigationNode.get_right_distance()
+    def move():
+        return navigationNode.moveforward()
+    def stop():
+        return navigationNode.stopbot()
+    def front():
+        return navigationNode.get_front_distance()
+    def left():
+        return navigationNode.get_left_distance()
 
     while rclpy.ok():
-        # with navigationNode.lock:
-        #     left_distance = navigationNode.get_left_distance()
-        #     right_distance = navigationNode.get_right_distance()
-        #     # We read front_distance once here for debugging
-        #     front_distance = navigationNode.get_front_distance()
-        #     print('-----------------------------------')
-        #     print(f"Initial front_distance: {front_distance}")
+        with navigationNode.lock:
+            left_distance = left()
+            right_distance = right()
+            # We read front_distance once here for debugging
+            front_distance = front()
+            print('-----------------------------------')
+            print(f"Initial front_distance: {front_distance}")
+            print(f"Initial left_distance: {left_distance}")
+            print(f"Initial right_distance: {right_distance}")
 
         # We only enter this loop while flag is True
         while flag and rclpy.ok():
@@ -59,7 +71,7 @@ def main_control_loop(navigationNode):
 
         # Now do the rotations (only after we finish the while flag loop)
         navigationNode.rotatebot(90)
-        navigationNode.rotatebot(-90)
+        # navigationNode.rotatebot(-90)
 
         time.sleep(0.2) # run at 20hz to prevent the control loop from running too fast
     return
@@ -138,41 +150,60 @@ class navigationNodes(Node):
             laser_data[laser_data == 0] = np.nan
             self.laser_range = laser_data
 
-    def rotatebot(self, rot_angle):
+    def rotatebot(self, rot_angle_degrees):
+        """
+        Rotate the robot by 'rot_angle_degrees' (positive = counter-clockwise,
+        negative = clockwise, depending on how your yaw sign is defined).
+        This function will NOT return until the robot has reached or passed
+        the target heading.
+        """
+        rotate_speed = 0.1   # You can adjust this speed
+        update_rate_s = 0.05 # Check the rotation every 50ms
+
         with self.lock:
+            # Current yaw in radians
             current_yaw = self.yaw
+
+            # Represent current heading as a complex number on the unit circle
             c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-            target_yaw = current_yaw + math.radians(rot_angle)
+
+            # Compute the target yaw in radians
+            target_yaw = current_yaw + math.radians(rot_angle_degrees * -1) # Negative for clockwise
             c_target_yaw = complex(math.cos(target_yaw), math.sin(target_yaw))
 
-            self.c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
+            # Determine rotation direction: +1 => one direction, -1 => the other
+            # We divide the target by the current heading and look at the sign of the imaginary part
+            rotation_direction = np.sign((c_target_yaw / c_yaw).imag)
 
             # Start rotating
             twist = Twist()
             twist.linear.x = 0.0
-            twist.angular.z = self.c_change_dir * rotatechange
+            twist.angular.z = rotation_direction * rotate_speed
             self.publisher_.publish(twist)
 
-        # Now busy-wait until done
-        rate = 0.05  # 50 ms
+        # Busy-wait loop until we've reached (or crossed) target heading
         while rclpy.ok():
+            time.sleep(update_rate_s)
+
             with self.lock:
+                # Get the robot's current heading
                 current_yaw = self.yaw
                 c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-                c_change = target_yaw / c_yaw
+
+                # Compare current heading to the target
+                c_change = c_target_yaw / c_yaw
                 c_dir_diff = np.sign(c_change.imag)
 
-                if self.c_change_dir * c_dir_diff <= 0:
-                    # We've crossed the target
+                # If the sign flips (meaning we've passed the target), stop
+                if rotation_direction * c_dir_diff <= 0:
                     break
-            
-            time.sleep(rate)
 
-        # Stop rotation when done
+        # Stop rotation
         with self.lock:
             twist = Twist()
             twist.angular.z = 0.0
             self.publisher_.publish(twist)
+
 
     def stopbot(self):
         with self.lock:
