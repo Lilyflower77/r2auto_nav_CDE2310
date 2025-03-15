@@ -1,11 +1,13 @@
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.executors import MultiThreadedExecutor
+
+from nav_msgs.msg import Odometry, OccupancyGrid
 from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import OccupancyGrid
-import numpy as np 
+from geometry_msgs.msg import Twist
+
+import numpy as np
 import threading
 import time
 import math
@@ -16,51 +18,57 @@ rotatechange = 0.1
 speedchange = 0.05
 occ_bins = [-1, 0, 100, 101]
 
+stop_distance = 200  # distance in mm
 
-# Look at these constants! You have to use these for your project 
-stop_distance = 200 # distance in mm
-
-
-def main_control_loop(navigationNodes):
-
+def main_control_loop(navigationNode):
+    """
+    Runs your custom robot logic in a loop, while the executor 
+    handles communication in a separate thread.
+    """
     flag = True
 
     while rclpy.ok():
-        with navigationNodes.lock: # to prevent race condition
-            ############################   WRITE YUR CODE HERE   ############################
-            
-            # Get the distance to the left wall
-            left_distance = navigationNodes.get_left_distance()
-            # Get the distance to the right wall
-            right_distance = navigationNodes.get_right_distance()
-            # Get the distance to the front wall
-            front_distance = navigationNodes.get_front_distance()
-            # print('Left distance: ', left_distance)
-            # print('Right distance: ', right_distance)
-            # print('Front distance: ', front_distance)
+        with navigationNode.lock:
+            left_distance = navigationNode.get_left_distance()
+            right_distance = navigationNode.get_right_distance()
+            # We read front_distance once here for debugging
+            front_distance = navigationNode.get_front_distance()
+            print('-----------------------------------')
+            print(f"Initial front_distance: {front_distance}")
 
-            print('-----------------------------------') 
-            
-            while flag:
-                navigationNodes.moveforward()
-                if front_distance < stop_distance: 
-                    navigationNodes.get_logger().info('Front distance: %f' % front_distance)
-                    flag = False
-                    navigationNodes.stopbot()
-                    break
+        # We only enter this loop while flag is True
+        while flag and rclpy.ok():
+            # Move forward
+            navigationNode.moveforward()
 
-            navigationNodes.rotatebot(90)
-            navigationNodes.rotatebot(-90)
+            # Sleep a bit to let the robot actually move
+            time.sleep(0.2)
 
-    time.sleep(0.2) # run at 10hz to prevent the control loop from running too fast
-    return 
+            # Re-check front_distance in each iteration
+            with navigationNode.lock:
+                front_distance = navigationNode.get_front_distance()
 
+            print(f"Rechecking front_distance: {front_distance}")
 
+            # If obstacle is close, stop and break
+            if front_distance < stop_distance:
+                navigationNode.get_logger().info('Front distance: %f' % front_distance)
+                flag = False
+                navigationNode.stopbot()
+                break
+
+        # Now do the rotations (only after we finish the while flag loop)
+        navigationNode.rotatebot(90)
+        navigationNode.rotatebot(-90)
+
+        # Sleep so we eventually re-iterate the outer loop
+        time.sleep(0.2)
+    return
 
 class navigationNodes(Node):
     # Publisher
     def __init__(self):
-        super().__init__('navigationNodes')
+        super().__init__('navigation_nodes')
         self.lock = threading.Lock()
 
         # Publisher initliazation
@@ -72,18 +80,26 @@ class navigationNodes(Node):
         self.pitch = 0
         self.yaw = 0
         
-        self.occupancy_subscription = self.create_subscription(OccupancyGrid, 'map', self.occ_callback, qos_profile_sensor_data)
-        self.occdata = np.array([])       
-        self.scan_subscription = self.create_subscription(LaserScan, 'scan', self.scan_callback, qos_profile_sensor_data)
+        self.occupancy_subscription = self.create_subscription(
+            OccupancyGrid, 
+            'map', 
+            self.occ_callback, 
+            qos_profile_sensor_data
+        )
+        self.occdata = np.array([])
+
+        self.scan_subscription = self.create_subscription(
+            LaserScan, 
+            'scan', 
+            self.scan_callback, 
+            qos_profile_sensor_data
+        )
         self.laser_range = np.array([])
 
     @staticmethod
     def euler_from_quaternion(x, y, z, w):
         """
-        Convert a quaternion into euler angles (roll, pitch, yaw)
-        roll is rotation around x in radians (counterclockwise)
-        pitch is rotation around y in radians (counterclockwise)
-        yaw is rotation around z in radians (counterclockwise)
+        Convert quaternion into euler angles (roll, pitch, yaw).
         """
         t0 = +2.0 * (w * x + y * z)
         t1 = +1.0 - 2.0 * (x * x + y * y)
@@ -98,156 +114,144 @@ class navigationNodes(Node):
         t4 = +1.0 - 2.0 * (y * y + z * z)
         yaw_z = math.atan2(t3, t4)
 
-        return roll_x, pitch_y, yaw_z # in radians
+        return roll_x, pitch_y, yaw_z
 
     def odom_callback(self, msg):
-        # self.get_logger().info('In odom_callback')
-        orientation_quat =  msg.pose.pose.orientation
-        self.roll, self.pitch, self.yaw = self.euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
-
+        with self.lock:
+            orientation_quat = msg.pose.pose.orientation
+            self.roll, self.pitch, self.yaw = self.euler_from_quaternion(
+                orientation_quat.x,
+                orientation_quat.y,
+                orientation_quat.z,
+                orientation_quat.w
+            )
 
     def occ_callback(self, msg):
-        # self.get_logger().info('In occ_callback')
-        # create numpy array
-        msgdata = np.array(msg.data)
-        # compute histogram to identify percent of bins with -1
-        # occ_counts = np.histogram(msgdata,occ_bins)
-        # calculate total number of bins
-        # total_bins = msg.info.width * msg.info.height
-        # log the info
-        # self.get_logger().info('Unmapped: %i Unoccupied: %i Occupied: %i Total: %i' % (occ_counts[0][0], occ_counts[0][1], occ_counts[0][2], total_bins))
-
-        # make msgdata go from 0 instead of -1, reshape into 2D
-        oc2 = msgdata + 1
-        # reshape to 2D array using column order
-        # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
-        self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
+        with self.lock:
+            msgdata = np.array(msg.data)
+            oc2 = msgdata + 1
+            # Reshape to 2D array
+            self.occdata = np.uint8(oc2.reshape(msg.info.height, msg.info.width))
 
     def scan_callback(self, msg):
-        # self.get_logger().info('In scan_callback')
-        # create numpy array
-        self.laser_range = np.array(msg.ranges)
-        # replace 0's with nan
-        self.laser_range[self.laser_range==0] = np.nan 
+        with self.lock:
+            laser_data = np.array(msg.ranges)
+            laser_data[laser_data == 0] = np.nan
+            self.laser_range = laser_data
 
     def rotatebot(self, rot_angle):
-        self.get_logger().info('In rotatebot')
+        with self.lock:
+            self.get_logger().info('In rotatebot')
 
-        current_yaw = self.yaw
-        c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-        target_yaw = current_yaw + math.radians(rot_angle)
-        c_target_yaw = complex(math.cos(target_yaw), math.sin(target_yaw))
+            current_yaw = self.yaw
+            c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
+            target_yaw = current_yaw + math.radians(rot_angle)
+            c_target_yaw = complex(math.cos(target_yaw), math.sin(target_yaw))
 
-        self.c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
-        self.target_yaw = c_target_yaw
+            self.c_change_dir = np.sign((c_target_yaw / c_yaw).imag)
+            self.target_yaw = c_target_yaw
 
-        # Start rotating
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = self.c_change_dir * rotatechange
-        self.publisher_.publish(twist)
+            # Start rotating
+            twist = Twist()
+            twist.linear.x = 0.0
+            twist.angular.z = self.c_change_dir * rotatechange
+            self.publisher_.publish(twist)
 
-        self.get_logger().info(f'Starting rotation to target: {math.degrees(math.atan2(c_target_yaw.imag, c_target_yaw.real))} degrees')
+            self.get_logger().info(
+                f'Starting rotation to target: {math.degrees(math.atan2(c_target_yaw.imag, c_target_yaw.real))} degrees'
+            )
 
-        # Create a timer to monitor the rotation state
-        self.rotation_timer = self.create_timer(0.05, self.check_rotation)
+            # Create a timer to monitor the rotation state
+            self.rotation_timer = self.create_timer(0.05, self.check_rotation)
 
     def check_rotation(self):
-        current_yaw = self.yaw
-        c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
-        c_change = self.target_yaw / c_yaw
-        c_dir_diff = np.sign(c_change.imag)
+        with self.lock:
+            current_yaw = self.yaw
+            c_yaw = complex(math.cos(current_yaw), math.sin(current_yaw))
+            c_change = self.target_yaw / c_yaw
+            c_dir_diff = np.sign(c_change.imag)
 
-        self.get_logger().info(f'Current Yaw: {math.degrees(current_yaw)} degrees')
+            self.get_logger().info(f'Current Yaw: {math.degrees(current_yaw)} degrees')
 
-        if self.c_change_dir * c_dir_diff <= 0:
-            self.get_logger().info('Rotation complete')
+            # If we've passed the target
+            if self.c_change_dir * c_dir_diff <= 0:
+                self.get_logger().info('Rotation complete')
 
-            # Stop rotation
+                # Stop rotation
+                twist = Twist()
+                twist.angular.z = 0.0
+                self.publisher_.publish(twist)
+
+                # Stop the timer
+                self.rotation_timer.cancel()
+
+    def stopbot(self):
+        with self.lock:
+            self.get_logger().info('In stopbot')
             twist = Twist()
+            twist.linear.x = 0.0
             twist.angular.z = 0.0
             self.publisher_.publish(twist)
 
-            # Stop the timer
-            self.rotation_timer.cancel()
-
-
-    def stopbot(self):
-        self.get_logger().info('In stopbot')
-        # publish to cmd_vel to move TurtleBot
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        # time.sleep(1)
-        self.publisher_.publish(twist)
-
     def moveforward(self):
-        # self.get_logger().info('In moveforward')
-        # create Twist object
-        twist = Twist()
-        # set linear speed
-        twist.linear.x = speedchange
-        # set angular speed
-        twist.angular.z = 0.0
-        # publish to cmd_vel to move TurtleBot
-        self.publisher_.publish(twist)
+        with self.lock:
+            twist = Twist()
+            twist.linear.x = speedchange
+            twist.angular.z = 0.0
+            self.publisher_.publish(twist)
 
     def get_left_distance(self):
         if self.laser_range.size == 0:
-            return float('inf')  # No data → treat as open path
-        left_distance = self.laser_range[80:100]
-        if left_distance.size == 0 or np.all(np.isnan(left_distance)):
             return float('inf')
-        return np.nanmin(left_distance)
+        left_data = self.laser_range[80:100]
+        if left_data.size == 0 or np.all(np.isnan(left_data)):
+            return float('inf')
+        return np.nanmin(left_data)
 
     def get_right_distance(self):
         if self.laser_range.size == 0:
             return float('inf')
-        right_distance = self.laser_range[260:280]
-        if right_distance.size == 0 or np.all(np.isnan(right_distance)):
+        right_data = self.laser_range[260:280]
+        if right_data.size == 0 or np.all(np.isnan(right_data)):
             return float('inf')
-        return np.nanmin(right_distance)
+        return np.nanmin(right_data)
 
     def get_front_distance(self):
         if self.laser_range.size == 0:
             return float('inf')
-        # Combine front readings (some LIDAR report front at 0 and 359 degrees)
-        front_distance = np.concatenate((self.laser_range[0:10], self.laser_range[350:359]))
-        if front_distance.size == 0 or np.all(np.isnan(front_distance)):
+        front_data = np.concatenate((self.laser_range[0:10], self.laser_range[350:359]))
+        if front_data.size == 0 or np.all(np.isnan(front_data)):
             return float('inf')
-        return np.nanmin(front_distance)
-
+        return np.nanmin(front_data)
 
 def main(args=None):
-    # initializing ROS2
     rclpy.init(args=args)
-    # initializing the node
-    navigationNode = navigationNodes()
+    navigation_node = navigationNodes()
 
-    # Start ROS commuinication in its own thread to avoid blocking
-    ros_thread = threading.Thread(target=rclpy.spin, args=(navigationNode,), daemon=True)
-    ros_thread.start() # starts the thread
+    # CHANGED: Use a MultiThreadedExecutor instead of manual threads
+    executor = MultiThreadedExecutor(num_threads=2)  # or more threads if desired
+    executor.add_node(navigation_node)
 
-    # Start the main control loop
-    control_thread = threading.Thread(target=main_control_loop, args=(navigationNode,), daemon=True)
-    control_thread.start() # starts the thread
+    # Start spinning the executor in its own thread
+    executor_thread = threading.Thread(target=executor.spin, daemon=True)  # <-- CHANGED
+    executor_thread.start()  # <-- CHANGED
 
     try:
-        ros_thread.join() # neither of these threads should ever finish
-        control_thread.join()
+        # Run your custom control loop in the main thread
+        main_control_loop(navigation_node)
     except KeyboardInterrupt:
-        navigationNode.get_logger().info('Keyboard interrupt detected. Shutting down...')
+        navigation_node.get_logger().info('Keyboard interrupt detected. Shutting down...')
     finally:
         # cleanup
-        navigationNode.stopbot()
+        navigation_node.stopbot()
         time.sleep(1)
-        navigationNode.destroy_node()
 
+        # Shut down the executor
+        executor.shutdown()                # <-- CHANGED
+        executor_thread.join()             # <-- CHANGED
 
-
-    # when the garbage collector destroys the node object)
-    rclpy.shutdown()
-
+        navigation_node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
