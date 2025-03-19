@@ -19,10 +19,13 @@ class navigationNodes(Node):
     def __init__(self):
         super().__init__('navigationNodes')
         self.lock = threading.Lock()
+    
+    # bring up nav2 stack
+    # bring up lifecycle manager
 
 class launcherNode(Node):
     def __init__(self):
-        super().__init__('launcherNode')
+        super().__init__('PClauncherNode')
         self.lock = threading.Lock()
 
 
