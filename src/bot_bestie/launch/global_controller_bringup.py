@@ -5,8 +5,8 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='bot_bestie',
-            executable='my_node',
-            name='my_node',
+            executable='global_controller',
+            name='global_controller',
             output='screen'
         )
     ])
