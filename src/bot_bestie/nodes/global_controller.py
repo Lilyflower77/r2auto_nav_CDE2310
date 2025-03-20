@@ -38,9 +38,8 @@ class GlobalController(Node):
         self.get_state_client = self.create_client(GetState, '/planner_server/get_state')
         self.change_state_client = self.create_client(ChangeState, '/planner_server/change_state')
 
-        # ✅ Thread for map polling (example of parallel execution)
-        self.polling_thread = threading.Thread(target=self.poll_map, daemon=True)
-        self.polling_thread.start()
+        # ✅ Polling handled with ROS timer (no manual thread)
+        self.map_polling_timer = self.create_timer(0.5, self.poll_map)
 
         self.get_logger().info('Global Controller Initialized')
 
@@ -154,30 +153,23 @@ class GlobalController(Node):
     def poll_map(self):
         """
         Polls the map at 2 Hz.
-        Example for continuous data processing.
+        Now using ROS timer (non-blocking).
         """
-        while rclpy.ok():
-            # Example placeholder for map polling
-            self.get_logger().info("Polling map data...")
-            time.sleep(0.5)
-
-    # =======================
-    # ✅ Recovery Behavior Example
-    # =======================
+        self.get_logger().info("Polling map data...")
 
     def recover_behavior(self):
         """
         Example for recovery logic.
+        Non-blocking approach.
         """
         self.get_logger().info("Attempting recovery...")
-        time.sleep(1.0)  # Example delay for recovery
         self.set_state('IDLE')
 
 def main(args=None):
     rclpy.init(args=args)
 
     # ✅ Use MultithreadedExecutor
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=2)
 
     global_controller = GlobalController()
     executor.add_node(global_controller)
