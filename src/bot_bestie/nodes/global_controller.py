@@ -4,7 +4,7 @@ from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from lifecycle_msgs.srv import GetState, ChangeState
-import threading
+import concurrent.futures
 import time
 
 class GlobalController(Node):
@@ -26,7 +26,7 @@ class GlobalController(Node):
         self.lock = threading.Lock()
 
         # ✅ High-frequency loop (10 Hz)
-        self.timer = self.create_timer(0.1, self.control_loop)
+        self.fast_timer = self.create_timer(0.1, self.fast_loop)
 
         # ✅ Goal publisher (to planner)
         self.goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
@@ -38,8 +38,11 @@ class GlobalController(Node):
         self.get_state_client = self.create_client(GetState, '/planner_server/get_state')
         self.change_state_client = self.create_client(ChangeState, '/planner_server/change_state')
 
-        # ✅ Polling handled with ROS timer (no manual thread)
-        self.map_polling_timer = self.create_timer(0.5, self.poll_map)
+        # ✅ State manager loop (slower control loop)
+        self.control_loop_timer = self.create_timer(1.0, self.control_loop)
+
+        # ✅ Thread pool for heavy tasks
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
         self.get_logger().info('Global Controller Initialized')
 
@@ -65,14 +68,45 @@ class GlobalController(Node):
             return self.state
     
     # =======================
-    # ✅ High-Frequency Control Loop
+    # ✅ Fast Loop (10 Hz) – Sensor Polling
+    # =======================
+
+    def fast_loop(self):
+        """
+        High-frequency loop (10 Hz) for real-time monitoring.
+        This should NEVER block.
+        """
+        # Example: Poll for temperature data
+        temperature = self.get_temperature_data()
+        self.get_logger().info(f"Temperature = {temperature:.2f}°C")
+
+        # Example: Poll for IMU interrupt
+        imu_interrupt = self.check_imu_interrupt()
+        if imu_interrupt:
+            self.get_logger().info("IMU Interrupt detected — logging data.")
+            self.executor.submit(self.log_sensor_data, temperature, imu_interrupt)
+
+    def get_temperature_data(self):
+        """ Simulated temperature reading """
+        return 25.0 + (0.5 - time.time() % 1)  # Simulated fluctuation
+
+    def check_imu_interrupt(self):
+        """ Simulated IMU check """
+        return time.time() % 5 < 0.1  # Trigger every 5 seconds
+
+    def log_sensor_data(self, temperature, imu_interrupt):
+        """ Blocking helper function for logging sensor data """
+        time.sleep(2)  # Simulate logging time
+        self.get_logger().info(f"Logged Temp={temperature:.2f}, IMU={imu_interrupt}")
+
+    # =======================
+    # ✅ Control Loop (1 Hz) – Decision Making
     # =======================
 
     def control_loop(self):
         """
-        High-frequency control loop.
-        Runs at 10Hz.
-        Handles high-level logic based on the state.
+        Lower-frequency loop for state management and goal setting.
+        This can handle blocking functions.
         """
         current_state = self.get_state()
 
@@ -87,89 +121,26 @@ class GlobalController(Node):
         elif current_state == 'ERROR':
             self.get_logger().error("System in ERROR state!")
 
+    def recover_behavior(self):
+        """ Recovery logic example """
+        self.get_logger().info("Attempting recovery...")
+        time.sleep(1.0)
+        self.set_state('IDLE')
+
     # =======================
-    # ✅ Feedback Callbacks
+    # ✅ Feedback Handling
     # =======================
 
     def odom_callback(self, msg):
-        """
-        Receives feedback from odometry.
-        Example of reading real-time feedback.
-        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         self.get_logger().info(f"Odometry: x={x}, y={y}")
 
-    # =======================
-    # ✅ Goal Handling
-    # =======================
-
-    def send_goal(self, x, y):
-        """
-        Sends a goal to the planner.
-        """
-        goal = PoseStamped()
-        goal.header.frame_id = 'map'
-        goal.pose.position.x = x
-        goal.pose.position.y = y
-        goal.pose.orientation.w = 1.0
-
-        self.goal_pub.publish(goal)
-        self.set_state('ACTIVE')
-        self.get_logger().info(f"Goal sent to x={x}, y={y}")
-
-    def update_goal_status(self):
-        """
-        Checks the status of the goal.
-        Example for future logic to handle goal completion.
-        """
-        if self.goal_active:
-            self.get_logger().info("Goal is still active...")
-
-    # =======================
-    # ✅ Lifecycle Handling
-    # =======================
-
-    def get_lifecycle_state(self, node_name):
-        """
-        Gets the lifecycle state of a node.
-        """
-        if not self.get_state_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn(f"Lifecycle service for {node_name} not available.")
-            return None
-
-        request = GetState.Request()
-        request.node_name = node_name
-        future = self.get_state_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-        if future.result():
-            return future.result().current_state.label
-        return None
-
-    # =======================
-    # ✅ Parallel Execution: Polling Example
-    # =======================
-
-    def poll_map(self):
-        """
-        Polls the map at 2 Hz.
-        Now using ROS timer (non-blocking).
-        """
-        self.get_logger().info("Polling map data...")
-
-    def recover_behavior(self):
-        """
-        Example for recovery logic.
-        Non-blocking approach.
-        """
-        self.get_logger().info("Attempting recovery...")
-        self.set_state('IDLE')
-
 def main(args=None):
     rclpy.init(args=args)
 
-    # ✅ Use MultithreadedExecutor
-    executor = MultiThreadedExecutor(num_threads=2)
+    # ✅ Multithreaded for fast loop + control loop
+    executor = MultiThreadedExecutor(num_threads=3)
 
     global_controller = GlobalController()
     executor.add_node(global_controller)
