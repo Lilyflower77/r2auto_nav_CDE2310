@@ -1,0 +1,4 @@
+[console_scripts]
+global_controller = bot_bestie.nodes.global_controller:main
+navigation_node = bot_bestie.nodes.navigation_node:main
+

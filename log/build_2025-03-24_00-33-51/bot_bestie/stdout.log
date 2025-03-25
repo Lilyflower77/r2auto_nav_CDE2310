@@ -1,0 +1,36 @@
+running egg_info
+creating build/bot_bestie/bot_bestie.egg-info
+writing build/bot_bestie/bot_bestie.egg-info/PKG-INFO
+writing dependency_links to build/bot_bestie/bot_bestie.egg-info/dependency_links.txt
+writing entry points to build/bot_bestie/bot_bestie.egg-info/entry_points.txt
+writing requirements to build/bot_bestie/bot_bestie.egg-info/requires.txt
+writing top-level names to build/bot_bestie/bot_bestie.egg-info/top_level.txt
+writing manifest file 'build/bot_bestie/bot_bestie.egg-info/SOURCES.txt'
+reading manifest file 'build/bot_bestie/bot_bestie.egg-info/SOURCES.txt'
+writing manifest file 'build/bot_bestie/bot_bestie.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build
+creating /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib
+creating /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib/bot_bestie
+copying bot_bestie/setup.py -> /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib/bot_bestie
+copying bot_bestie/__init__.py -> /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib/bot_bestie
+running install
+running install_lib
+creating /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie
+copying /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib/bot_bestie/setup.py -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie
+copying /home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/build/lib/bot_bestie/__init__.py -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie
+byte-compiling /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie/setup.py to setup.cpython-310.pyc
+byte-compiling /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie/__init__.py to __init__.cpython-310.pyc
+running install_data
+copying package.xml -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/share/bot_bestie
+creating /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/share/bot_bestie/launch
+copying bot_bestie/launch/global_controller_bringup.py -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/share/bot_bestie/launch
+copying bot_bestie/launch/nav2_bringup.py -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/share/bot_bestie/launch
+copying bot_bestie/launch/global_bringup.py -> /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/share/bot_bestie/launch
+running install_egg_info
+Copying build/bot_bestie/bot_bestie.egg-info to /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info
+running install_scripts
+Installing global_controller script to /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/bin
+Installing navigation_node script to /home/rex/colcon_ws/src/bot_bestie/install/bot_bestie/bin
+writing list of installed files to '/home/rex/colcon_ws/src/bot_bestie/build/bot_bestie/install.log'

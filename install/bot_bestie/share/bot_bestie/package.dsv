@@ -1,0 +1,12 @@
+source;share/bot_bestie/hook/path.ps1
+source;share/bot_bestie/hook/path.dsv
+source;share/bot_bestie/hook/path.sh
+source;share/bot_bestie/hook/pythonpath.ps1
+source;share/bot_bestie/hook/pythonpath.dsv
+source;share/bot_bestie/hook/pythonpath.sh
+source;share/bot_bestie/hook/pythonscriptspath.ps1
+source;share/bot_bestie/hook/pythonscriptspath.dsv
+source;share/bot_bestie/hook/pythonscriptspath.sh
+source;share/bot_bestie/hook/ament_prefix_path.ps1
+source;share/bot_bestie/hook/ament_prefix_path.dsv
+source;share/bot_bestie/hook/ament_prefix_path.sh
