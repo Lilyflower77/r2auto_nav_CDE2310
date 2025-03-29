@@ -94,6 +94,7 @@ class GlobalController(Node):
         self.ball_launches_attempted = 0
         self.max_heat_locations = [None] * 5
         self.ramp_location = [None]
+        self.finished_mapping = False
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -201,16 +202,20 @@ class GlobalController(Node):
         """
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
-            self.get_logger().info("IMU Interrupt detected, doing appropriate action")
+            self.get_logger().info("IMU Interrupt detected, Stopping all movement")
+            # TODO: replace with a call to the controller to stop all movement
+            time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping...")
-            ## TODO: 
-            ## IMU interrupt checking
+            ## TODO: IMU interrupt checking function (todo: check how it reads on the robot)
+            if ## IMU interrupt is true:
+                self.set_state(GlobalController.State.Imu_Interrupt)
+                self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             self.log_temperature()
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            ## IMU interrupt checking
+            ## TODO: IMU interrupt checking
             pass
         elif bot_current_state == GlobalController.State.Launching_Balls:
             ## do nothing, waiting on controller to change state, this state should be idle
@@ -221,42 +226,38 @@ class GlobalController(Node):
 
 
 
-
-
     # =======================
     # ✅ Control Loop (1 Hz) – Decision Making
     # =======================
 
     def control_loop(self):
         """Slower decision-making loop (1 Hz)"""
-        current_state = self.get_state()
+        bot_current_state = self.get_state()
+        if bot_current_state == GlobalController.State.Imu_Interrupt:
+            self.get_logger().info("IMU Interrupt detected from control loop, walling off are and setting alternative goal")
+            # TODO: Create function to change map to wall off area and reset goal
+            pass
+        elif bot_current_state == GlobalController.State.Exploratory_Mapping:
+            self.get_logger().info("Exploratory Mapping (control_loop)...")
+            ## TODO: create new goal and go as per rex's OG code autonav (define NAV2 behavior in diff nav2_controller.py file)
 
-        if current_state == 'INITIALIZING':
-            self.initialize_system()
-        elif current_state == 'ACTIVE':
-            self.update_goal_status()
-        elif current_state == 'RECOVERING':
-            self.recover_behavior()
-        elif current_state == 'IDLE':
-            self.get_logger().info("Waiting for new task...")
-        elif current_state == 'ERROR':
-            self.get_logger().error("System in ERROR state!")
+            ## TODO: set threshold for fully maped area to cut off exploratory mapping
+            if self.finished_mapping:
+                ## TODO: get robot max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
+                self.get_logger().info("Finished Mapping, changing state to Goal Navigation")
+                self.set_state(GlobalController.State.Goal_Navigation)
 
-    def initialize_system(self):
-        """ Placeholder init logic """
-        self.get_logger().info("System initializing...")
-        time.sleep(1.0)
-        self.set_state('ACTIVE')
-
-    def update_goal_status(self):
-        """ Placeholder active logic """
-        self.get_logger().info("Goal is active and being monitored.")
-
-    def recover_behavior(self):
-        """ Recovery logic example """
-        self.get_logger().info("Attempting recovery...")
-        time.sleep(1.0)
-        self.set_state('IDLE')
+            
+            pass
+        elif bot_current_state == GlobalController.State.Goal_Navigation:
+            ## IMU interrupt checking
+            pass
+        elif bot_current_state == GlobalController.State.Launching_Balls:
+            ## do nothing, waiting on controller to change state, this state should be idle
+            pass
+        elif bot_current_state == GlobalController.State.Attempting_Ramp:
+            ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
+            pass
 
 
 
