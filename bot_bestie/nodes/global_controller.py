@@ -77,6 +77,8 @@ class GlobalController(Node):
             10
         )
         
+        #TODO: Create a publisher for the ball launcher (maybe action etc, must have feedback for when the ball is done launching)
+
         # Allow for global positioning 
         self.tfBuffer = tf2_ros.Buffer()
         self.tfListener = tf2_ros.TransformListener(self.tfBuffer, self)
@@ -236,7 +238,7 @@ class GlobalController(Node):
         if bot_current_state == GlobalController.State.Imu_Interrupt:
             self.get_logger().info("IMU Interrupt detected from control loop, walling off are and setting alternative goal")
             # TODO: Create function to change map to wall off area and reset goal
-            pass
+
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
             ## TODO: create new goal and go as per rex's OG code autonav (define NAV2 behavior in diff nav2_controller.py file)
@@ -247,14 +249,18 @@ class GlobalController(Node):
                 self.get_logger().info("Finished Mapping, changing state to Goal Navigation")
                 self.set_state(GlobalController.State.Goal_Navigation)
 
-            
-            pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            ## IMU interrupt checking
-            pass
+            ## Go to max heat location then change state to Launching Balls
+            for location in self.max_heat_locations:
+                #TODO: create function to set goal to location (this implementation should be a blocking function)
+                # after the go to location has returned
+                self.get_logger().info("Goal Navigation, setting state to Launching Balls")
+                self.set_state(GlobalController.State.Launching_Balls)
+                
         elif bot_current_state == GlobalController.State.Launching_Balls:
-            ## do nothing, waiting on controller to change state, this state should be idle
-            pass
+            ## publish to the ball launcher
+            self.get_logger().info("Launching Balls...")
+            ## TODO: create function to launch balls from the publisher
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
             pass
