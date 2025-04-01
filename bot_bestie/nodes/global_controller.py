@@ -166,7 +166,7 @@ class GlobalController(Node):
         self.set_state(GlobalController.State.Exploratory_Mapping)
 
     ## Callback handers for temperature sensors
-     def sensor1_callback(self, msg):
+    def sensor1_callback(self, msg):
         if msg.data and len(msg.data) == 64:
             indices = [
             18, 19, 20, 21,
