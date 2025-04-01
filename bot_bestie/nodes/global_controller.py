@@ -9,16 +9,50 @@ from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu
 #from tf_transformations import euler_from_quaternion
 from enum import Enum, auto
+from collections import deque
 import concurrent.futures
 import time
 import threading
 import numpy as np
 import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
-
 import math
 from collections import deque
 from nav2_msgs.action import NavigateToPose
+
+# code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
+def euler_from_quaternion(x, y, z, w):
+    """
+    Convert a quaternion into euler angles (roll, pitch, yaw)
+    roll is rotation around x in radians (counterclockwise)
+    pitch is rotation around y in radians (counterclockwise)
+    yaw is rotation around z in radians (counterclockwise)
+    """
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll_x = math.atan2(t0, t1)
+
+    t2 = +2.0 * (w * y - z * x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    pitch_y = math.asin(t2)
+
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = math.atan2(t3, t4)
+
+    return roll_x, pitch_y, yaw_z # in radians
+
+
+# constants
+rotatechange = 0.15 # was 0.1
+speedchange = 0.05
+occ_bins = [-1, 0, 100, 101]
+stop_distance = 0.25
+front_angle = 30
+front_angles = range(-front_angle,front_angle+1,1)
+scanfile = 'lidar.txt'
+mapfile = 'map.txt'
 
 class GlobalController(Node):
     """
@@ -78,12 +112,17 @@ class GlobalController(Node):
             self.imu_callback,
             10
         )
+
+        # Allow for global positioning 
+        try: 
+            self.tfBuffer = tf2_ros.Buffer()
+            self.tfListener = tf2_ros.TransformListener(self.tfBuffer, self)
+            self.get_logger().info("TF listener created")
+        except Exception as e :
+            self.get_logger().error("TF listener failed: %s" % str(e))
         
         #TODO: Create a publisher for the ball launcher (maybe action etc, must have feedback for when the ball is done launching)
 
-        # Allow for global positioning 
-        self.tfBuffer = tf2_ros.Buffer()
-        self.tfListener = tf2_ros.TransformListener(self.tfBuffer, self)
 
         # Temperature Attributes
         self.temp_and_location_data = []  # [[x, y], left_temp, right_temp]
@@ -91,14 +130,27 @@ class GlobalController(Node):
         self.latest_right_temp = None
 
         # IMU Attributes stored as (timestamp, pitch)
-        self.pitch_window = []
+        self.pitch_window = deque()
+        # For global moving average
+        self.global_pitch_sum = 0.0
+        self.global_pitch_count = 0
+        # For recent average (last 0.3s)
+        self.recent_pitch_avg = 0.0
+        self.global_pitch_avg = 0.0
         
         # logic attributes
         self.state = GlobalController.State.Initializing
         self.ball_launches_attempted = 0
-        self.max_heat_locations = [None] * 5
+        self.max_heat_locations = [None] * 2
         self.ramp_location = [None]
         self.finished_mapping = False
+
+        self.occ_callback_called = False
+        self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
+        self.get_logger().info("Waiting for Nav2 Action Server...")
+        self.nav_client.wait_for_server()
+        self.get_logger().info("Nav2 Action Server available. Ready to send goals.")
+        self.visited_frontiers = set()
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -128,16 +180,27 @@ class GlobalController(Node):
     def imu_callback(self, msg):
         q = msg.orientation
         quat = [q.x, q.y, q.z, q.w]
-        roll, pitch, yaw = euler_from_quaternion(quat)
+        _, pitch, _ = euler_from_quaternion(quat)
 
         now = self.get_clock().now().nanoseconds / 1e9  # seconds
-        with self.lock:
-            self.pitch_window.append((now, pitch))
 
-            # Keep only the last 0.5 seconds of data
-            self.pitch_window = [
-                (t, p) for t, p in self.pitch_window if now - t <= 0.5
-            ]
+        with self.lock:
+            # Append latest value
+            self.pitch_window.append((now, abs(pitch)))  # use abs to ignore direction
+
+            # Remove old entries beyond 0.5s
+            while self.pitch_window and now - self.pitch_window[0][0] > 0.5:
+                self.pitch_window.popleft()
+
+            # Update global moving average
+            self.global_pitch_sum += abs(pitch)
+            self.global_pitch_count += 1
+            self.global_pitch_avg = self.global_pitch_sum / self.global_pitch_count
+
+            # Compute recent average for last 0.3s
+            recent_values = [p for t, p in self.pitch_window if now - t <= 0.3]
+            if recent_values:
+                self.recent_pitch_avg = sum(recent_values) / len(recent_values)    
 
 
     def odom_callback(self, msg):
@@ -558,6 +621,15 @@ class GlobalController(Node):
                     self.latest_right_temp
                 ])
 
+    def IMU_interrupt_check(self):
+        with self.lock:
+            if self.global_pitch_avg > 0 and self.recent_pitch_avg > 5 * self.global_pitch_avg: # set as 5 * moving average
+                self.get_logger().info("IMU Interrupt detected")
+                return True
+            else:
+                return False
+
+    
 
     # =======================
     # Fast Loop (10 Hz) – Sensor Polling
