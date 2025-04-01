@@ -8,6 +8,13 @@ from std_msgs.msg import Float32MultiArray
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu
+
+from std_msgs.msg import String
+from time import sleep
+from std_msgs.msg import Int32
+import RPi.GPIO as GPIO
+from gpiozero import Servo
+
 #from tf_transformations import euler_from_quaternion
 from enum import Enum, auto
 from collections import deque
@@ -111,6 +118,13 @@ class GlobalController(Node):
             Imu,
             '/imu',
             self.imu_callback,
+            10
+        )
+
+        self.flywheel = self.create_subscription(
+            Int32,
+            'flywheel',
+            self.flywheel_callback,
             10
         )
 
@@ -712,7 +726,10 @@ class GlobalController(Node):
         elif bot_current_state == GlobalController.State.Launching_Balls:
             ## publish to the ball launcher
             self.get_logger().info("Launching Balls...")
-            ## TODO: create function to launch balls from the publisher
+            flywheel_message = Int32()
+            flywheel_message.data = 50
+            self.flywheel.publish(flywheel_message)
+            ## TODO= hong yi gimme delay of 15 seconds tnks
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
             pass
