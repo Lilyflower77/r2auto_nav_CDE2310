@@ -505,35 +505,42 @@ class GlobalController(Node):
 
     def dijk_mover(self):
         try:
-            rclpy.spin_once(self)
-            # Get the current position of the robot
-            start = self.get_robot_grid_position()
+            while rclpy.ok():
+                '''
+                #heavy slows it down but update map data regularly
+                while not self.occ_callback_called:
+                    rclpy.spin_once(self)
+                self.occ_callback_called = False
+                '''
+                rclpy.spin_once(self)
+                # Get the current position of the robot
+                start = self.get_robot_grid_position()
 
-            if start[0] is None or start[1] is None:
-                self.get_logger().warn("No valid robot position available.")
-                return
-            
-            #self.get_logger().info(f"Current position: ({start[0]}, {start[1]})")
-            # Find the closest frontier (unmapped cell)
-            frontier = self.detect_closest_frontier_outside(start, min_distance=2)
-            #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
-            if frontier is not None:
-                # Convert the frontier grid coordinates to world coordinates
-                world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
+                if start[0] is None or start[1] is None:
+                    self.get_logger().warn("No valid robot position available.")
+                    continue
+                
+                #self.get_logger().info(f"Current position: ({start[0]}, {start[1]})")
+                # Find the closest frontier (unmapped cell)
+                frontier = self.detect_closest_frontier_outside(start, min_distance=2)
                 #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
-                # Send Nav2 goal to the frontier and wait for confirmation
-                self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
-                goal_reached = self.send_nav_goal(world_x, world_y)
+                if frontier is not None:
+                    # Convert the frontier grid coordinates to world coordinates
+                    world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
+                    #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
+                    # Send Nav2 goal to the frontier and wait for confirmation
+                    self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
+                    goal_reached = self.send_nav_goal(world_x, world_y)
 
-                if goal_reached:
-                    #self.get_logger().info("Robot successfully navigated to the frontier. Proceeding to the next frontier.")
-                    time.sleep(1)  # Small delay before next iteration
+                    if goal_reached:
+                        #self.get_logger().info("Robot successfully navigated to the frontier. Proceeding to the next frontier.")
+                        time.sleep(1)  # Small delay before next iteration
+                    else:
+                        self.get_logger().warn("Failed to reach the goal, retrying or taking action.")
                 else:
-                    self.get_logger().warn("Failed to reach the goal, retrying or taking action.")
-            else:
-                self.get_logger().warn("No frontiers found. Robot is stuck!")
-                #print(self.occdata[start[0], start[1]])
-                #print(np.unique(self.occdata))
+                    self.get_logger().warn("No frontiers found. Robot is stuck!")
+                    #print(self.occdata[start[0], start[1]])
+                    #print(np.unique(self.occdata))
 
                 
         except Exception as e:
@@ -649,7 +656,7 @@ class GlobalController(Node):
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
             self.get_logger().info("IMU Interrupt detected, Stopping all movement")
-            self.stopbot()
+            # TODO: replace with a call to the controller to stop all movement
             time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
@@ -686,7 +693,7 @@ class GlobalController(Node):
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
-            self.dijk_mover()
+            ## TODO: create new goal and go as per rex's OG code autonav (define NAV2 behavior in diff nav2_controller.py file)
 
             ## TODO: set threshold for fully maped area to cut off exploratory mapping
             if self.finished_mapping:
@@ -711,10 +718,6 @@ class GlobalController(Node):
             pass
 
 
-    def initialise(self):
-        self.wait_for_map()
-        self.rotate_till_occu()
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -724,7 +727,8 @@ def main(args=None):
 
     global_controller = GlobalController()
     executor.add_node(global_controller)
-    global_controller.initialise()
+    global_controller.wait_for_map()
+    global_controller.rotate_till_occu()
 
     try:
         executor.spin()
