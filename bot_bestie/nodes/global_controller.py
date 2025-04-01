@@ -10,6 +10,7 @@ from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import Imu
 from tf_transformations import euler_from_quaternion
 from enum import Enum, auto
+from collections import deque
 import concurrent.futures
 import time
 import threading
@@ -89,12 +90,18 @@ class GlobalController(Node):
         self.latest_right_temp = None
 
         # IMU Attributes stored as (timestamp, pitch)
-        self.pitch_window = []
+        self.pitch_window = deque()
+        # For global moving average
+        self.global_pitch_sum = 0.0
+        self.global_pitch_count = 0
+        # For recent average (last 0.3s)
+        self.recent_pitch_avg = 0.0
+        self.global_pitch_avg = 0.0
         
         # logic attributes
         self.state = GlobalController.State.Initializing
         self.ball_launches_attempted = 0
-        self.max_heat_locations = [None] * 5
+        self.max_heat_locations = [None] * 2
         self.ramp_location = [None]
         self.finished_mapping = False
 
@@ -126,16 +133,27 @@ class GlobalController(Node):
     def imu_callback(self, msg):
         q = msg.orientation
         quat = [q.x, q.y, q.z, q.w]
-        roll, pitch, yaw = euler_from_quaternion(quat)
+        _, pitch, _ = euler_from_quaternion(quat)
 
         now = self.get_clock().now().nanoseconds / 1e9  # seconds
-        with self.lock:
-            self.pitch_window.append((now, pitch))
 
-            # Keep only the last 0.5 seconds of data
-            self.pitch_window = [
-                (t, p) for t, p in self.pitch_window if now - t <= 0.5
-            ]
+        with self.lock:
+            # Append latest value
+            self.pitch_window.append((now, abs(pitch)))  # use abs to ignore direction
+
+            # Remove old entries beyond 0.5s
+            while self.pitch_window and now - self.pitch_window[0][0] > 0.5:
+                self.pitch_window.popleft()
+
+            # Update global moving average
+            self.global_pitch_sum += abs(pitch)
+            self.global_pitch_count += 1
+            self.global_pitch_avg = self.global_pitch_sum / self.global_pitch_count
+
+            # Compute recent average for last 0.3s
+            recent_values = [p for t, p in self.pitch_window if now - t <= 0.3]
+            if recent_values:
+                self.recent_pitch_avg = sum(recent_values) / len(recent_values)    
 
     # def odom_callback(self, msg): ## not needed for now
     #     x = msg.pose.pose.position.x
@@ -191,6 +209,15 @@ class GlobalController(Node):
                     self.latest_left_temp,
                     self.latest_right_temp
                 ])
+
+    def IMU_interrupt_check(self):
+        with self.lock:
+            if self.global_pitch_avg > 0 and self.recent_pitch_avg > 5 * self.global_pitch_avg: # set as 5 * moving average
+                self.get_logger().info("IMU Interrupt detected")
+                return True
+            else:
+                return False
+
     
 
     # =======================
@@ -210,14 +237,15 @@ class GlobalController(Node):
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping...")
-            ## TODO: IMU interrupt checking function (todo: check how it reads on the robot)
-            if ## IMU interrupt is true:
+            if self.IMU_interrupt_check: ## IMU interrupt is true
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             self.log_temperature()
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            ## TODO: IMU interrupt checking
+            if self.IMU_interrupt_check: ## IMU interrupt is true
+                self.set_state(GlobalController.State.Imu_Interrupt)
+                self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
         elif bot_current_state == GlobalController.State.Launching_Balls:
             ## do nothing, waiting on controller to change state, this state should be idle
