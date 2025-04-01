@@ -166,15 +166,27 @@ class GlobalController(Node):
         self.set_state(GlobalController.State.Exploratory_Mapping)
 
     ## Callback handers for temperature sensors
-    def sensor1_callback(self, msg):
-        if msg.data:
-            with self.lock:
-                self.latest_left_temp = msg.data[0]
+     def sensor1_callback(self, msg):
+        if msg.data and len(msg.data) == 64:
+            indices = [
+            18, 19, 20, 21,
+            26, 27, 28, 29,
+            34, 35, 36, 37,
+            42, 43, 44, 45
+        ]
+            center_values = [msg.data[i] for i in indices]
+            self.latest_left_temp = sum(center_values) / len(center_values)
 
     def sensor2_callback(self, msg):
-        if msg.data:
-            with self.lock:
-                self.latest_right_temp = msg.data[0]
+        if msg.data and len(msg.data) == 64:
+            indices = [
+            18, 19, 20, 21,
+            26, 27, 28, 29,
+            34, 35, 36, 37,
+            42, 43, 44, 45
+        ]
+            center_values = [msg.data[i] for i in indices]
+            self.latest_right_temp = sum(center_values) / len(center_values)
 
     ## callback handler for IMU
     def imu_callback(self, msg):
