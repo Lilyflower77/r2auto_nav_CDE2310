@@ -4,7 +4,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped ,Twist
 from nav_msgs.msg import Odometry, OccupancyGrid
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu
@@ -131,8 +131,13 @@ class GlobalController(Node):
             self.get_logger().info("TF listener created")
         except Exception as e :
             self.get_logger().error("TF listener failed: %s" % str(e))
+
         
-        #TODO: Create a publisher for the ball launcher (maybe action etc, must have feedback for when the ball is done launching)
+        # Ball launcher
+        self.flywheel_publisher = self.create_publisher(
+            Int32, 
+            'flywheel', 
+            10)
 
 
         # Temperature Attributes
@@ -156,7 +161,7 @@ class GlobalController(Node):
         self.state = GlobalController.State.Initializing
         self.previous_state = None
         self.ball_launches_attempted = 0
-        self.max_heat_locations = [None] * 2
+        self.max_heat_locations = [None] * 3
         self.ramp_location = [None]
         self.finished_mapping = False
 
@@ -202,6 +207,15 @@ class GlobalController(Node):
         ]
             center_values = [msg.data[i] for i in indices]
             self.latest_right_temp = sum(center_values) / len(center_values)
+
+    ## method to launch balls
+    def launch_ball(self):
+        msg = Int32()
+        msg.data = 50
+        self.publisher_.publish(msg)
+        self.get_logger().info('Publishing: "%d"' % msg.data)
+        self.ball_launches_attempted += 1
+        self.get_logger().info(f"Ball launches attempted: {self.ball_launches_attempted}")
 
     ## callback handler for IMU
     def imu_callback(self, msg):
@@ -771,9 +785,11 @@ class GlobalController(Node):
                 self.set_state(GlobalController.State.Launching_Balls)
                 
         elif bot_current_state == GlobalController.State.Launching_Balls:
-            ## publish to the ball launcher
+            self.launch_ball()
             self.get_logger().info("Launching Balls...")
-            ## TODO: create function to launch balls from the publisher
+            time.sleep(15)
+            self.get_logger().info("Finished Launching Balls, changing state back to goal navigation")
+            self.set_state(GlobalController.State.Goal_Navigation)
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
             pass
