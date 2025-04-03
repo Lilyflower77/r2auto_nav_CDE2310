@@ -8,7 +8,7 @@ from std_msgs.msg import Float32MultiArray
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu
-#from tf_transformations import euler_from_quaternion
+from tf_transformations import euler_from_quaternion
 from enum import Enum, auto
 from collections import deque
 import concurrent.futures
@@ -20,7 +20,10 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 import math
 from collections import deque
 from nav2_msgs.action import NavigateToPose
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
+
+'''
 # code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
 def euler_from_quaternion(x, y, z, w):
     """
@@ -43,7 +46,7 @@ def euler_from_quaternion(x, y, z, w):
     yaw_z = math.atan2(t3, t4)
 
     return roll_x, pitch_y, yaw_z # in radians
-
+'''
 
 # constants
 rotatechange = 0.15 # was 0.1
@@ -78,6 +81,7 @@ class GlobalController(Node):
         super().__init__('global_controller')
         ## initialize all publishers and subscribers
 
+        self.publisher_ = self.create_publisher(Twist,'cmd_vel',10)
         # odom
         self.odom_subscription = self.create_subscription(
         Odometry,
@@ -85,12 +89,18 @@ class GlobalController(Node):
         self.odom_callback,
         10)
 
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_RELIABLE,
+            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
+        )
+
         # occupancy grid
         self.occ_subscription = self.create_subscription(
             OccupancyGrid,
             'map',
             self.occ_callback,
-            qos_profile_sensor_data)
+            map_qos)
         self.occ_subscription  # prevent unused variable warning
         self.occdata = np.array([])
 
@@ -141,6 +151,7 @@ class GlobalController(Node):
         
         # logic attributes
         self.state = GlobalController.State.Initializing
+        self.previous_state = None
         self.ball_launches_attempted = 0
         self.max_heat_locations = [None] * 2
         self.ramp_location = [None]
@@ -164,7 +175,7 @@ class GlobalController(Node):
 
 
         self.get_logger().info('Global Controller Initialized, changing state to Exploratory Mapping')
-        self.set_state(GlobalController.State.Exploratory_Mapping)
+        self.set_state(GlobalController.State.Initializing)
 
     ## Callback handers for temperature sensors
     def sensor1_callback(self, msg):
@@ -219,7 +230,7 @@ class GlobalController(Node):
     def odom_callback(self, msg):
         # self.get_logger().info('In odom_callback')
         orientation_quat = msg.pose.pose.orientation
-        self.roll, self.pitch, self.yaw = euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
+        self.roll, self.pitch, self.yaw = euler_from_quaternion([orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w])
 
 
     def occ_callback(self, msg):
@@ -387,14 +398,7 @@ class GlobalController(Node):
 
 
     def detect_closest_frontier_outside(self, robot_pos, min_distance=2):
-        """
-        Uses BFS to detect the closest frontier cell (free cell adjacent to unknown space)
-        that is outside the specified minimum distance from the robot.
 
-        :param robot_pos: (x, y) robot's current grid position.
-        :param min_distance: Minimum Euclidean distance (in grid cells) from the robot to ignore.
-        :return: (x, y) grid coordinates of the closest frontier, or None if not found.
-        """
         # Use squared distance to avoid unnecessary sqrt calculations
         min_dist_sq = min_distance ** 2
 
@@ -505,7 +509,6 @@ class GlobalController(Node):
 
     def dijk_mover(self):
         try:
-            rclpy.spin_once(self)
             # Get the current position of the robot
             start = self.get_robot_grid_position()
 
@@ -523,7 +526,7 @@ class GlobalController(Node):
                 #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
                 # Send Nav2 goal to the frontier and wait for confirmation
                 self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
-                goal_reached = self.send_nav_goal(world_x, world_y)
+                goal_reached = self.nav_to_goal(world_x, world_y)
 
                 if goal_reached:
                     #self.get_logger().info("Robot successfully navigated to the frontier. Proceeding to the next frontier.")
@@ -532,8 +535,6 @@ class GlobalController(Node):
                     self.get_logger().warn("Failed to reach the goal, retrying or taking action.")
             else:
                 self.get_logger().warn("No frontiers found. Robot is stuck!")
-                #print(self.occdata[start[0], start[1]])
-                #print(np.unique(self.occdata))
 
                 
         except Exception as e:
@@ -544,36 +545,58 @@ class GlobalController(Node):
             self.stopbot()
 
 
-    def send_nav_goal(self, x, y, yaw=0.0):
-        goal_msg = NavigateToPose.Goal()
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        #self.get_logger().info(f"[Feedback] Distance remaining: {feedback.distance_remaining:.2f}")
 
-        # Set frame and timestamp
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn("❌ Goal was rejected by Nav2.")
+            self.goal_active = False
+            return
+
+        self.get_logger().info("✅ Goal accepted by Nav2.")
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.goal_result_callback)
+
+
+    def goal_result_callback(self, future):
+        try:
+            result_msg = future.result()
+            status = result_msg.status  # ✅ status is here
+            result = result_msg.result  # this is the NavigateToPose_Result message
+
+            self.get_logger().info(f"🏁 Nav2 goal finished with status: {status}")
+
+            if status == 3:  # STATUS_SUCCEEDED
+                self.get_logger().info("🎯 Goal reached successfully!")
+            else:
+                self.get_logger().warn(f"⚠️ Goal ended with failure status: {status}")
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Exception in goal_result_callback: {e}")
+
+
+
+    def nav_to_goal(self, x, y, yaw=0.0):
+        goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = 'map'
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
 
-        # Set target position
         goal_msg.pose.pose.position.x = x
         goal_msg.pose.pose.position.y = y
         goal_msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal_msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
 
-        #self.get_logger().info(f'Sending goal: x={x}, y={y}')
-        
-        # Send goal asynchronously
-        send_goal_future = self.nav_client.send_goal_async(goal_msg)
-        
-        # Wait for the result to be completed
-        rclpy.spin_until_future_complete(self, send_goal_future)
+        self.get_logger().info(f"📬 Sending goal to Nav2: x={x:.2f}, y={y:.2f}")
 
-        # Check if the goal was successfully completed
-        result = send_goal_future.result()
+        self.goal_active = True  # Flag to prevent multiple goals
 
-        if result and result.status == 2:  # Status 2 means goal succeeded
-            self.get_logger().info("Goal successfully reached!")
-            return True  # Confirmation received, goal reached successfully
-        else:
-            self.get_logger().warn("Goal failed or was preempted!")
-            return False  # Goal failed, need to retry or handle error
+        future = self.nav_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        future.add_done_callback(self.goal_response_callback)
+
+
 
     # =======================
     # Thread safe State Management
@@ -590,7 +613,6 @@ class GlobalController(Node):
         with self.lock:
             return self.state
         
-    '''
     def get_robot_global_position(self):
         try:
             now = rclpy.time.Time()
@@ -612,7 +634,6 @@ class GlobalController(Node):
         except Exception as e:
             self.get_logger().warn(f"[TF] Failed to get global robot position: {e}")
             return None
-    '''
 
     def log_temperature(self):
         position = self.get_robot_global_position()
@@ -653,14 +674,16 @@ class GlobalController(Node):
             time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
-            self.get_logger().info("Exploratory Mapping...")
-            if self.IMU_interrupt_check: ## IMU interrupt is true
+            if(self.previous_state != bot_current_state):
+                self.get_logger().info("Exploratory Mapping...")
+                self.previous_state = bot_current_state
+            if self.IMU_interrupt_check(): ## IMU interrupt is true
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             self.log_temperature()
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            if self.IMU_interrupt_check: ## IMU interrupt is true
+            if self.IMU_interrupt_check(): ## IMU interrupt is true
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
@@ -680,7 +703,10 @@ class GlobalController(Node):
     def control_loop(self):
         """Slower decision-making loop (1 Hz)"""
         bot_current_state = self.get_state()
-        if bot_current_state == GlobalController.State.Imu_Interrupt:
+        if bot_current_state == GlobalController.State.Initializing:
+            self.initialise()
+            self.set_state(GlobalController.State.Exploratory_Mapping)
+        elif bot_current_state == GlobalController.State.Imu_Interrupt:
             self.get_logger().info("IMU Interrupt detected from control loop, walling off are and setting alternative goal")
             # TODO: Create function to change map to wall off area and reset goal
 
@@ -716,7 +742,7 @@ class GlobalController(Node):
         self.rotate_till_occu()
 
 
-def main(args=None):
+def main(args=None):#
     rclpy.init(args=args)
 
     # ✅ Use MultiThreadedExecutor to support timers + background tasks
@@ -724,7 +750,6 @@ def main(args=None):
 
     global_controller = GlobalController()
     executor.add_node(global_controller)
-    global_controller.initialise()
 
     try:
         executor.spin()
