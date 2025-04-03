@@ -148,6 +148,9 @@ class GlobalController(Node):
         # For recent average (last 0.3s)
         self.recent_pitch_avg = 0.0
         self.global_pitch_avg = 0.0
+        #occ map variables
+        self.padding = 3
+        self.confirming_unknowns = False
         
         # logic attributes
         self.state = GlobalController.State.Initializing
@@ -263,17 +266,17 @@ class GlobalController(Node):
                 self.occdata[node[1], node[0]] = 1
         
         
-        padding = 3
         height, width = self.occdata.shape
 
         # Create a copy to store expanded obstacles
         expanded_occdata = self.occdata.copy()
+        self.original_occdata = self.occdata.copy()
 
         for y in range(height):
             for x in range(width):
                 if self.occdata[y, x] == 101:  # Only use the original grid
-                    for dy in range(-padding, padding + 1):
-                        for dx in range(-padding, padding + 1):
+                    for dy in range(-self.padding, self.padding + 1):
+                        for dx in range(-self.padding, self.padding + 1):
                             nx, ny = x + dx, y + dy  # New x, y coordinates
                             if 0 <= ny < height and 0 <= nx < width:  # Bounds check
                                 expanded_occdata[ny, nx] = 101  # Mark as occupied
@@ -397,7 +400,7 @@ class GlobalController(Node):
         return False  # No adjacent unknown cells, not a frontier
 
 
-    def detect_closest_frontier_outside(self, robot_pos, min_distance=2):
+    def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
 
         # Use squared distance to avoid unnecessary sqrt calculations
         min_dist_sq = min_distance ** 2
@@ -427,6 +430,41 @@ class GlobalController(Node):
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]:
                 nx, ny = x + dx, y + dy
                 if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+        print(count)
+        return None
+    
+    def detect_closest_frontier_outside_without_processing(self, robot_pos, min_distance=3):
+
+        # Use squared distance to avoid unnecessary sqrt calculations
+        min_dist_sq = min_distance ** 2
+
+        queue = deque([robot_pos])
+        visited = set([robot_pos])
+
+        count = 0
+        while queue:
+
+            x, y = queue.popleft()
+            count += 1
+            # Calculate squared distance from the robot's position
+            dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
+
+            # Check only cells that are outside the minimum distance
+            if dist_sq >= min_dist_sq:
+                if self.is_frontier(self.occdata, x, y) and (x, y) not in self.visited_frontiers:
+                    for dx in range(-1, 2):  # Covers [-1, 0, 1]
+                        for dy in range(-1, 2):  # Covers [-1, 0, 1]
+                            nx, ny = x + dx, y + dy
+                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                                self.visited_frontiers.add((nx, ny))
+                    return (x, y)
+
+            # Explore 8-connected neighbors
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in visited and 0 <= ny < self.original_occdata.shape[0] and 0 <= nx < self.original_occdata.shape[1]:
                     visited.add((nx, ny))
                     queue.append((nx, ny))
         print(count)
@@ -518,7 +556,10 @@ class GlobalController(Node):
             
             #self.get_logger().info(f"Current position: ({start[0]}, {start[1]})")
             # Find the closest frontier (unmapped cell)
-            frontier = self.detect_closest_frontier_outside(start, min_distance=2)
+            if self.confirming_unknowns:
+                frontier = self.detect_closest_frontier_outside_without_processing(start, min_distance=2)
+            else:
+                frontier = self.detect_closest_frontier_outside(start, min_distance=2)
             #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
             if frontier is not None:
                 # Convert the frontier grid coordinates to world coordinates
@@ -534,6 +575,7 @@ class GlobalController(Node):
                 else:
                     self.get_logger().warn("Failed to reach the goal, retrying or taking action.")
             else:
+                self.confirming_unknowns = True
                 self.get_logger().warn("No frontiers found. Robot is stuck!")
 
                 
