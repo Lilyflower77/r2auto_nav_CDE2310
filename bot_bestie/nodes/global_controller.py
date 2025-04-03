@@ -164,6 +164,8 @@ class GlobalController(Node):
         self.max_heat_locations = [None] * 3
         self.ramp_location = [None]
         self.finished_mapping = False
+        self.goal_active = False
+        self.just_reached_goal = False
 
         self.occ_callback_called = False
         self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
@@ -627,6 +629,8 @@ class GlobalController(Node):
 
             if status == 3:  # STATUS_SUCCEEDED
                 self.get_logger().info("🎯 Goal reached successfully!")
+                self.goal_active = False
+                self.just_reached_goal = True
             else:
                 self.get_logger().warn(f"⚠️ Goal ended with failure status: {status}")
 
@@ -778,11 +782,17 @@ class GlobalController(Node):
 
         elif bot_current_state == GlobalController.State.Goal_Navigation:
             ## Go to max heat location then change state to Launching Balls
-            for location in self.max_heat_locations:
-                #TODO: create function to set goal to location (this implementation should be a blocking function)
-                # after the go to location has returned
-                self.get_logger().info("Goal Navigation, setting state to Launching Balls")
+            if self.just_reached_goal:
+                self.get_logger().info("✅ Goal reached, switching to Launching_Balls")
+                self.just_reached_goal = False
                 self.set_state(GlobalController.State.Launching_Balls)
+                return
+
+            if not self.goal_active and self.max_heat_locations:
+                location = self.max_heat_locations.pop(0)
+                if location is not None:
+                    self.nav_to_goal(location[0], location[1])
+                    return
                 
         elif bot_current_state == GlobalController.State.Launching_Balls:
             self.launch_ball()
