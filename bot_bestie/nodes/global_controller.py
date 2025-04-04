@@ -23,40 +23,9 @@ from nav2_msgs.action import NavigateToPose
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 
-'''
-# code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
-def euler_from_quaternion(x, y, z, w):
-    """
-    Convert a quaternion into euler angles (roll, pitch, yaw)
-    roll is rotation around x in radians (counterclockwise)
-    pitch is rotation around y in radians (counterclockwise)
-    yaw is rotation around z in radians (counterclockwise)
-    """
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
-
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-
-    return roll_x, pitch_y, yaw_z # in radians
-'''
-
 # constants
 rotatechange = 0.15 # was 0.1
-speedchange = 0.05
-occ_bins = [-1, 0, 100, 101]
-stop_distance = 0.25
-front_angle = 30
-front_angles = range(-front_angle,front_angle+1,1)
-scanfile = 'lidar.txt'
-mapfile = 'map.txt'
+stop_distance = 0.25 # distance to stop in front of heat source
 
 class GlobalController(Node):
     """
@@ -76,6 +45,7 @@ class GlobalController(Node):
         Imu_Interrupt = auto()
         Attempting_Ramp = auto()
         Returning_Home = auto()
+        Go_to_Heat_Souce = auto()
 
     def __init__(self):
         super().__init__('global_controller')
@@ -260,22 +230,13 @@ class GlobalController(Node):
         self.map_origin_y = msg.info.origin.position.y
         # create numpy array
         msgdata = np.array(msg.data)
-        # compute histogram to identify percent of bins with -1
-        #occ_counts = np.histogram(msgdata,occ_bins)
-        # calculate total number of bins
-        #total_bins = msg.info.width * msg.info.height
-        # log the info
-        #self.get_logger().info('Unmapped: %i Unoccupied: %i Occupied: %i Total: %i' % (occ_counts[0][0], occ_counts[0][1], occ_counts[0][2], total_bins))
 
-        
         # make msgdata go from 0 instead of -1, reshape into 2D
         oc2 = msgdata + 1
         # reshape to 2D array using column order
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         #self.get_logger().info(f"Unique values in occupancy grid: {np.unique(self.occdata)}")
-        # print to file
-        np.savetxt(mapfile, self.occdata)
 
         for node in self.visited_frontiers:
             if(self.occdata[node[1], node[0]] != 101):
@@ -747,6 +708,11 @@ class GlobalController(Node):
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
+        elif bot_current_state == GlobalController.State.Go_to_Heat_Souce:
+            self.IMU_interrupt_check()
+
+        
+
         elif bot_current_state == GlobalController.State.Launching_Balls:
             ## do nothing, waiting on controller to change state, this state should be idle
             pass
@@ -793,6 +759,18 @@ class GlobalController(Node):
                 if location is not None:
                     self.nav_to_goal(location[0], location[1])
                     return
+                
+        elif bot_current_state == GlobalController.State.Go_to_Heat_Souce:
+            # TODO: Funciton to go to heat source in while loop
+                # if self.IMU_interrupt_check():
+                # exit condition when too close or some shit
+            if self.ball_lauches_attempted == 2:
+                self.get_logger().info("Ball launches attempted, changing state to goal navigation")
+                self.set_state(GlobalController.State.Attempting_Ramp)
+                
+            else:
+                self.get_logger().info("Going back to goal navigation state")
+                self.set_state(GlobalController.State.Goal_Navigation)
                 
         elif bot_current_state == GlobalController.State.Launching_Balls:
             self.launch_ball()
