@@ -7,7 +7,7 @@ from nav_msgs.msg import Odometry, OccupancyGrid
 from std_msgs.msg import Float32MultiArray, Int32
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, LaserScan
 from tf_transformations import euler_from_quaternion
 from enum import Enum, auto
 from collections import deque
@@ -94,6 +94,15 @@ class GlobalController(Node):
             10
         )
 
+        # lidar subscription
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            'scan',
+            self.scan_callback,
+            qos_profile_sensor_data)
+        self.scan_subscription  # prevent unused variable warning
+        self.laser_range = np.array([])
+
         # Allow for global positioning 
         try: 
             self.tfBuffer = tf2_ros.Buffer()
@@ -123,6 +132,9 @@ class GlobalController(Node):
         # For recent average (last 0.3s)
         self.recent_pitch_avg = 0.0
         self.global_pitch_avg = 0.0
+        # For left and right lidar data
+        self.distance_left = 0.0
+        self.distance_right = 0.0
         #occ map variables
         self.padding = 3
         self.confirming_unknowns = False
@@ -214,6 +226,28 @@ class GlobalController(Node):
             recent_values = [p for t, p in self.pitch_window if now - t <= 0.3]
             if recent_values:
                 self.recent_pitch_avg = sum(recent_values) / len(recent_values)    
+
+    ## lidar callback
+    def listener_callback(self, msg):
+        # Convert LaserScan ranges to numpy array
+        laser_range = np.array(msg.ranges)
+
+        # Replace zeros (invalid) with nan
+        laser_range[laser_range == 0] = np.nan
+
+        # Calculate index corresponding to +30° and -30°
+        angle_increment_deg = 360 / len(laser_range)
+        index_pos_30 = int(round(30 / angle_increment_deg))
+        index_neg_30 = int(round((360 - 30) / angle_increment_deg))
+
+        # Extract the distances at those indices
+        distance_pos_30 = laser_range[index_pos_30]
+        distance_neg_30 = laser_range[index_neg_30]
+        with self.lock:
+            self.distance_left = distance_pos_30
+            self.distance_right = distance_neg_30
+
+
 
 
     def odom_callback(self, msg):
@@ -617,6 +651,40 @@ class GlobalController(Node):
         future = self.nav_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
         future.add_done_callback(self.goal_response_callback)
 
+    def drive_straight_between_walls(self, base_speed=0.1, correction_gain=0.5, max_angular=0.3):
+        """
+        Drives the robot forward while adjusting orientation to stay centered between left and right walls.
+
+        :param base_speed: Constant forward linear velocity.
+        :param correction_gain: Tuning factor to determine angular adjustment strength.
+        :param max_angular: Maximum allowable angular velocity.
+        """
+        with self.lock:
+            left = self.distance_left
+            right = self.distance_right
+
+        # Ignore if one of the sides is invalid (NaN)
+        if np.isnan(left) or np.isnan(right):
+            self.get_logger().warn("Invalid LIDAR data — cannot drive straight.")
+            self.stopbot()
+            return
+
+        # Calculate error: if left is further than right, turn left slightly (and vice versa)
+        error = left - right
+
+        # Simple proportional controller to correct orientation
+        angular_z = correction_gain * error
+
+        # Clamp angular velocity to prevent oversteering
+        angular_z = max(min(angular_z, max_angular), -max_angular)
+
+        # Create and publish the twist command
+        twist = Twist()
+        twist.linear.x = base_speed
+        twist.angular.z = angular_z
+        self.publisher_.publish(twist)
+
+        self.get_logger().info(f"Driving straight | L: {left:.2f}, R: {right:.2f}, Angular: {angular_z:.2f}")
 
 
     # =======================
@@ -718,7 +786,7 @@ class GlobalController(Node):
             pass
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
-            pass
+            self.drive_straight_between_walls()
 
 
 
@@ -765,7 +833,8 @@ class GlobalController(Node):
                 # if self.IMU_interrupt_check():
                 # exit condition when too close or some shit
             if self.ball_lauches_attempted == 2:
-                self.get_logger().info("Ball launches attempted, changing state to goal navigation")
+                self.get_logger().info("2 of 2 balls launched, changing state to Attempting Ramp")
+                #TODO : set goal to ramp location + orient properly
                 self.set_state(GlobalController.State.Attempting_Ramp)
                 
             else:
