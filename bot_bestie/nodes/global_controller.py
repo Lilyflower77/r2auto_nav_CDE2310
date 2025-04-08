@@ -132,7 +132,7 @@ class GlobalController(Node):
         self.scan_subscription = self.create_subscription(
             LaserScan,
             'scan',
-            self.scan_callback,
+            self.laser_callback,
             qos_profile_sensor_data)
         self.scan_subscription  # prevent unused variable warning
         self.laser_range = np.array([])
@@ -175,7 +175,7 @@ class GlobalController(Node):
         self.distance_left = 0.0
         self.distance_right = 0.0
         #occ map variables
-        self.padding = 2
+        self.padding = 1
         self.confirming_unknowns = False
 
         
@@ -197,6 +197,7 @@ class GlobalController(Node):
         self.visited_frontiers = set()
         self.distance_to_heat = None
         self.angle_to_heat = None
+        self.laser_msg = None
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -225,9 +226,12 @@ class GlobalController(Node):
 
             if(self.valid_heat(self.latest_left_temp)):
                 #TODO : adjust to the real angle range of where the sensor points
-                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(-5,5, 0.1)
+                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(80,100, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
+                if x is None or y is None:
+                    return
                 self.heat_left_world_x_y.append([x,y])
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at: {x}, {y}")  
 
 
     def sensor2_callback(self, msg):
@@ -245,9 +249,13 @@ class GlobalController(Node):
 
             if(self.valid_heat(self.latest_right_temp)):
                 #TODO : adjust to the real angle range of where the sensor points
-                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(-5,5, 0.1)
+                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(-10,10, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
+
+                if x is None or y is None:
+                    return
                 self.heat_right_world_x_y.append([x,y])
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at: {x}, {y}")   
 
 
 
@@ -255,7 +263,6 @@ class GlobalController(Node):
         self.laser_msg = msg
 
         
-
     ## method to launch balls
     def launch_ball(self):
         msg = Int32()
@@ -622,7 +629,7 @@ class GlobalController(Node):
         
 
 
-    def valid_heat(self, array , threshold = 30.0):
+    def valid_heat(self, array , threshold = 26.0):
         if array is None:
             return False
 
@@ -671,15 +678,8 @@ class GlobalController(Node):
                 self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
                 self.nav_to_goal(world_x, world_y)
             else:
-                '''
-                if(self.confirming_unknowns and self.padding == 0):
-                    self.finished_mapping = True
-                    self.get_logger().warn("No frontiers found. Robot is stuck!")
-                elif self.padding > 0:
-                    self.padding -= 1
-                    self.visited_frontiers = set()
-                    self.confirming_unknowns = True
-                '''
+                
+                self.finished_mapping = True
                 self.get_logger().warn("No frontiers found. Robot is stuck!")
                 
 
@@ -710,16 +710,27 @@ class GlobalController(Node):
 
 
     def calculate_heat_world(self , angle_to_heat , distance_to_heat):
-        x,y,yaw = self.get_robot_global_position()
+        temp = self.get_robot_global_position()
+        if(temp is None):
+            self.get_logger().warn("Unable to calculate heat grid, no robot position.")
+            return None , None
+        x,y,yaw = temp
         if x is None or y is None or angle_to_heat is None or distance_to_heat is None:
             self.get_logger().warn("Unagle to calculate heat grid, missing data.")
-            return
+            return None , None
         #angle in rad
         return self.polar_to_world_coords(angle_to_heat, distance_to_heat, x, y, yaw)
         
 
-    def world_to_grid(x_world, y_world, origin_x, origin_y, resolution):
+    def world_to_grid(self,x_world, y_world):
         
+        if not hasattr(self, 'map_resolution') or not hasattr(self, 'map_origin_x'):
+            self.get_logger().error("Map metadata not available.")
+            return None, None
+        
+        origin_x = self.map_origin_x
+        origin_y = self.map_origin_y
+        resolution = self.map_resolution
         grid_x = int((x_world - origin_x) / resolution)
         grid_y = int((y_world - origin_y) / resolution)
         return grid_x, grid_y
@@ -799,7 +810,9 @@ class GlobalController(Node):
         self.get_logger().info(f"Driving straight | L: {left:.2f}, R: {right:.2f}, Angular: {angular_z:.2f}")
 
     def laser_avg_angle_and_distance_in_mode_bin(self, angle_min_deg=-30, angle_max_deg=30, bin_width=0.1):
-
+        if(self.laser_msg is None):
+            self.get_logger().warn("No laser scan data available.")
+            return None, None
         scan_msg = self.laser_msg
         ranges = np.array(scan_msg.ranges)
         angles = np.arange(scan_msg.angle_min, scan_msg.angle_max, scan_msg.angle_increment)
@@ -840,7 +853,7 @@ class GlobalController(Node):
 
 
 
-    def polar_to_world_coords(avg_angle_rad, avg_distance, robot_x, robot_y, robot_yaw_rad):
+    def polar_to_world_coords(self, avg_angle_rad, avg_distance, robot_x, robot_y, robot_yaw_rad):
         x_local = avg_distance * math.cos(avg_angle_rad)
         y_local = avg_distance * math.sin(avg_angle_rad)
 
@@ -904,6 +917,8 @@ class GlobalController(Node):
 
     def normal_bfs_from_world(self , world_x, world_y):
         grid_x , grid_y = self.world_to_grid(world_x,world_y)
+
+
         # Initialize frontier with a starting point
         frontier = deque()
         start = (grid_x, grid_y)  # Replace x and y with your starting coords
@@ -915,7 +930,7 @@ class GlobalController(Node):
 
         # Example grid directions (8-connected)
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]
-
+        count = 0
         self.reached_heat = False
         while frontier:
             
@@ -923,6 +938,7 @@ class GlobalController(Node):
                 return True
             
             if not self.goal_active:
+                count += 1
                 current = frontier.popleft()
 
                 x,y = current
@@ -936,6 +952,8 @@ class GlobalController(Node):
                     if self.is_valid(neighbor, visited):
                         frontier.append(neighbor)
                         visited.add(neighbor)
+                
+                self.get_logger().info(f"Current position: {current} | Visited count: {len(visited)}")
         return False
                     
 
@@ -1016,7 +1034,6 @@ class GlobalController(Node):
             if self.IMU_interrupt_check() and not self.hit_ramped: ## IMU interrupt is true
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
-            self.log_temperature()
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
             if self.IMU_interrupt_check() and not self.hit_ramped:
@@ -1082,13 +1099,14 @@ class GlobalController(Node):
 
                 world_x, world_y = location
                 result = self.normal_bfs_from_world(world_x,world_y)
-
+                self.get_logger().info(f"Result of BFS from world: {result}")
                 if not result:
                     self.get_logger().info("Unable to reach heat")
 
                 self.get_logger().info("Goal Navigation, setting state to Launching Balls")
                 self.set_state(GlobalController.State.Launching_Balls)
                 self.launch_ball()
+                time.sleep(25)
 
             self.set_state(GlobalController.State.Attempting_Ramp)
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
