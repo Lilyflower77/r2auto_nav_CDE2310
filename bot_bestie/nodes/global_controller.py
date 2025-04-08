@@ -1088,18 +1088,11 @@ class GlobalController(Node):
 
                 self.get_logger().info("Goal Navigation, setting state to Launching Balls")
                 self.set_state(GlobalController.State.Launching_Balls)
+                self.launch_ball()
 
             self.set_state(GlobalController.State.Attempting_Ramp)
-        elif bot_current_state == GlobalController.State.Launching_Balls:
-            
-            ## publish to the ball launcher
-            
-            self.get_logger().info("Launching Balls...")
-            time.sleep(15)
-            self.get_logger().info("Finished Launching Balls, changing state back to goal navigation")
-            self.set_state(GlobalController.State.Goal_Navigation)
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
-            ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
+            self.drive_straight_between_walls()
             pass
 
 

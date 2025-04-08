@@ -13,7 +13,10 @@ setup(
             f'{package_name}/launch/global_bringup.py',
             f'{package_name}/launch/global_controller_bringup.py',
             f'{package_name}/launch/nav2_bringup.py'
-        ])
+        ]),
+        (f'share/{package_name}/param', [
+            f'{package_name}/param/burger.yaml'   # ← ✅ Add this line
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
