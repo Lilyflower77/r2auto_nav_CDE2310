@@ -23,6 +23,11 @@ from nav2_msgs.action import NavigateToPose
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from sklearn.cluster import KMeans
 from collections import Counter
+import matplotlib.pyplot as plt
+import random
+import datetime
+import os
+from PIL import Image
 
 
 '''
@@ -108,6 +113,9 @@ class GlobalController(Node):
         self.occ_subscription  # prevent unused variable warning
         self.occdata = np.array([])
 
+        self.print_map_subscription = self.create_subscription(OccupancyGrid, '/map', self.map_callback, map_qos)
+        self.print_map_subscription
+
         # temperature sensors
         self.left_temperature = self.create_subscription(
             Float32MultiArray,
@@ -160,10 +168,13 @@ class GlobalController(Node):
         self.filtered_x_y_list = []
         self.heat_left_world_x_y = []
         self.heat_right_world_x_y = []
+        #self.heat_left_world_x_y = self.generate_cluster((1.0, 3.0), count=5)
+        #self.heat_right_world_x_y = self.generate_cluster((2.0, 3.5), count=5)
+
 
         # IMU Attributes stored as (timestamp, pitch)
         self.pitch_window = deque()
-        self.ramp_location = None
+        self.ramp_location = (1.0,3.0)
         self.hit_ramped = False
         # For global moving average
         self.global_pitch_sum = 0.0
@@ -176,9 +187,12 @@ class GlobalController(Node):
         self.distance_right = 0.0
         #occ map variables
         self.padding = 1
-        self.confirming_unknowns = False
 
-        
+        #heat 
+        self.max_heat_locations = []
+        self.normal_bfs = set()
+        self.line_coords = []
+
         # logic attributes
         self.state = GlobalController.State.Initializing
         self.previous_state = None
@@ -212,8 +226,55 @@ class GlobalController(Node):
         self.get_logger().info('Global Controller Initialized, changing state to Exploratory Mapping')
         self.set_state(GlobalController.State.Initializing)
 
+
+    def map_callback(self, msg: OccupancyGrid):
+        width = msg.info.width
+        height = msg.info.height
+        data = np.array(msg.data).reshape((height, width))
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+
+        #self.orange_points = [(2.0, 2.0), (3.0, 1.0)]
+        #self.green_points = [(4.0, 3.0), (5.0, 4.0)]
+        #self.visited_frontiers = [(1.5, 1.5), (2.5, 2.5)]
+        #self.own_blocked_points = [(0.5, 0.5), (1.0, 1.0)]
+        # Base map coloring
+        image[data == 101] = [0, 0, 0]           # Occupied - black
+        image[data == 0]   = [255, 255, 255]     # Free - white
+        image[data == 1]   = [127, 127, 127]     # Special Free - grey
+
+        # Helper to mark pixels
+        def mark(points, color):
+            if points is not None:
+                for p in points:
+                    if p is None:
+                        continue
+                    x, y = p
+                    i, j = self.world_to_grid(x, y)
+                    if 0 <= i < height and 0 <= j < width:
+                        image[i, j] = color
+
+        mark(self.normal_bfs, [255, 165, 0])      # Orange
+        mark(self.max_heat_locations, [0, 255, 0])         # Green
+        mark(self.visited_frontiers, [255, 255, 0])  # Yellow
+        mark(self.line_coords, [0, 0, 255])   # Blue
+
+        save_dir = "/home/rex/colcon_ws/src/map_images"
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Filename with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"occupancy_map_{timestamp}.png"
+        save_path = os.path.join(save_dir, filename)
+
+        # Save the image
+        Image.fromarray(image).save(save_path)
+
+
+
+
     ## Callback handers for temperature sensors
     def sensor1_callback(self, msg):
+        
         if msg.data and len(msg.data) == 64:
             indices = [
             18, 19, 20, 21,
@@ -231,7 +292,7 @@ class GlobalController(Node):
                 if x is None or y is None:
                     return
                 self.heat_left_world_x_y.append([x,y])
-                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at: {x}, {y}")  
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at right sensor at: {x}, {y}")  
 
 
     def sensor2_callback(self, msg):
@@ -255,7 +316,7 @@ class GlobalController(Node):
                 if x is None or y is None:
                     return
                 self.heat_right_world_x_y.append([x,y])
-                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at: {x}, {y}")   
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected front sensor at: {x}, {y}")   
 
 
 
@@ -276,7 +337,7 @@ class GlobalController(Node):
     def launch_ball(self):
         msg = Int32()
         msg.data = 50
-        self.publisher_.publish(msg)
+        self.flywheel_publisher.publish(msg)
         self.get_logger().info('Publishing: "%d"' % msg.data)
         self.ball_launches_attempted += 1
         self.get_logger().info(f"Ball launches attempted: {self.ball_launches_attempted}")
@@ -327,8 +388,12 @@ class GlobalController(Node):
             self.distance_left = distance_pos_30
             self.distance_right = distance_neg_30
 
-
-
+    def generate_cluster(self, center, count=5, spread=0.2):
+        cx, cy = center
+        return [
+            (cx + random.uniform(-spread, spread), cy + random.uniform(-spread, spread))
+            for _ in range(count)
+        ]
 
     def odom_callback(self, msg):
         # self.get_logger().info('In odom_callback')
@@ -664,15 +729,11 @@ class GlobalController(Node):
             # Get the current position of the robot
             start = self.get_robot_grid_position()
 
-            self.confirming_unknowns = False
             if start[0] is None or start[1] is None:
                 self.get_logger().warn("No valid robot position available.")
                 return
             
-            if self.confirming_unknowns:
-                frontier = self.detect_closest_frontier_outside_without_processing(start, min_distance=2)
-            else:
-                frontier = self.detect_closest_frontier_outside(start, min_distance=2)
+            frontier = self.detect_closest_frontier_outside(start, min_distance=2)
             if frontier is not None:
                 world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
                 self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
@@ -738,6 +799,7 @@ class GlobalController(Node):
 
     def goal_result_callback(self, future):
         try:
+            self.goal_active = False
             result_msg = future.result()
             status = result_msg.status  # ✅ status is here
             result = result_msg.result  # this is the NavigateToPose_Result message
@@ -747,7 +809,6 @@ class GlobalController(Node):
             if status == 3:  # STATUS_SUCCEEDED
                 self.reached_heat = True
                 self.get_logger().info("🎯 Goal reached successfully!")
-                self.goal_active = False
                 self.just_reached_goal = True
             else:
                 self.get_logger().warn(f"⚠️ Goal ended with failure status: {status}")
@@ -810,46 +871,68 @@ class GlobalController(Node):
         self.get_logger().info(f"Driving straight | L: {left:.2f}, R: {right:.2f}, Angular: {angular_z:.2f}")
 
     def laser_avg_angle_and_distance_in_mode_bin(self, angle_min_deg=-30, angle_max_deg=30, bin_width=0.1):
-        if(self.laser_msg is None):
+        if self.laser_msg is None:
             self.get_logger().warn("No laser scan data available.")
             return None, None
+
         scan_msg = self.laser_msg
         ranges = np.array(scan_msg.ranges)
-        angles = np.arange(scan_msg.angle_min, scan_msg.angle_max, scan_msg.angle_increment)
 
-        if len(angles) > len(ranges):
-            angles = angles[:len(ranges)]
-        else:
-            ranges = ranges[:len(angles)]
-
+        # Compute angles (radians) for each scan index
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
         angles_deg = np.degrees(angles)
+
+        # Normalize angles to [-180°, 180°)
+        angles_deg = (angles_deg + 180) % 360 - 180
+
+        # Filter angles within specified field of view
         mask = (angles_deg >= angle_min_deg) & (angles_deg <= angle_max_deg)
-
         filtered_ranges = ranges[mask]
-        filtered_angles = angles[mask]  # radians
+        filtered_angles = angles[mask]  # still in radians
 
+        # Debug filtered range
+        self.get_logger().info(
+            f"📐 Filtered angle range: {angles_deg[mask].min():.1f}° to {angles_deg[mask].max():.1f}°, "
+            f"Count: {np.count_nonzero(mask)}"
+        )
+
+        # Filter out invalid range readings
         valid_mask = np.isfinite(filtered_ranges) & (filtered_ranges > 0.01)
         filtered_ranges = filtered_ranges[valid_mask]
         filtered_angles = filtered_angles[valid_mask]
 
         if len(filtered_ranges) == 0:
+            self.get_logger().warn("No valid laser points in the specified angle range.")
             return None, None
 
+        # Bin distances into fixed-width intervals
         binned = np.floor(filtered_ranges / bin_width).astype(int)
         from collections import Counter
         mode_bin, _ = Counter(binned).most_common(1)[0]
 
+        # Extract the mode bin values
         bin_min = mode_bin * bin_width
         bin_max = bin_min + bin_width
         in_mode = (filtered_ranges >= bin_min) & (filtered_ranges < bin_max)
-
         mode_distances = filtered_ranges[in_mode]
         mode_angles = filtered_angles[in_mode]
 
         if len(mode_angles) == 0:
+            self.get_logger().warn("No points in mode bin.")
             return None, None
 
-        return np.mean(mode_angles), np.mean(mode_distances)  # both in radians and meters
+        # ✅ Use circular mean for angles to prevent wrap-around issues
+        avg_angle_rad = np.arctan2(np.mean(np.sin(mode_angles)), np.mean(np.cos(mode_angles)))
+        avg_angle_deg = (np.degrees(avg_angle_rad) + 180) % 360 - 180
+
+        avg_distance = np.mean(mode_distances)
+
+        self.get_logger().info(
+            f"🟢 Mode distance: {avg_distance:.2f} m, Mode angle: {avg_angle_deg:.1f}°"
+        )
+
+        return avg_angle_rad, avg_distance  # radians, meters
+
 
 
 
@@ -912,8 +995,11 @@ class GlobalController(Node):
 
     def is_valid(self, neighbor, visited):
         x, y = neighbor
-        return (x, y) not in visited and 0 <= x < self.occdata.shape[0] and 0 <= y < self.occdata.shape[1]
+        return (x, y) not in visited and 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]
 
+    def is_within_map(self , neighbour):
+        x, y = neighbour
+        return 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]
 
     def normal_bfs_from_world(self , world_x, world_y):
         grid_x , grid_y = self.world_to_grid(world_x,world_y)
@@ -925,15 +1011,14 @@ class GlobalController(Node):
         frontier.append(start)
 
         # Set to keep track of visited nodes
-        visited = set()
-        visited.add(start)
+        self.normal_bfs.add(start)
 
         # Example grid directions (8-connected)
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]
         count = 0
         self.reached_heat = False
         while frontier:
-            
+            #self.get_logger().info(f"Frontier is at: {frontier}")
             if(self.reached_heat):
                 return True
             
@@ -942,18 +1027,18 @@ class GlobalController(Node):
                 current = frontier.popleft()
 
                 x,y = current
-                if(self.occdata[y,x] == 1):
+                if(self.is_within_map(current) and self.occdata[y,x] == 1):
                     cur_x , cur_y  = self.grid_to_world(x,y)
                     self.nav_to_goal(cur_x , cur_y)
 
             
                 for dx, dy in directions:
                     neighbor = (current[0] + dx, current[1] + dy)
-                    if self.is_valid(neighbor, visited):
+                    if self.is_valid(neighbor, self.normal_bfs):
                         frontier.append(neighbor)
-                        visited.add(neighbor)
+                        self.normal_bfs.add(neighbor)
                 
-                self.get_logger().info(f"Current position: {current} | Visited count: {len(visited)}")
+                self.get_logger().info(f"Current position: {current} | Visited count: {len(self.normal_bfs)}")
         return False
                     
 
@@ -987,25 +1072,24 @@ class GlobalController(Node):
         step_x, step_y = dir_map[direction]
 
         half_len = length // 2
-        line_coords = []
 
         for i in range(-half_len, half_len + 1):
             gx = cx + i * step_x
             gy = cy + i * step_y
             #TODO: is this suppose to be x and y swapped?
             if 0 <= gx < self.occdata.shape[1] and 0 <= gy < self.occdata.shape[0]:
-                line_coords.append((gx, gy))
+                self.line_coords.append((gx, gy))
             else:
                 return  # Abort if any part goes out of bounds
 
         # Check ends
-        (sx, sy), (ex, ey) = line_coords[0], line_coords[-1]
+        (sx, sy), (ex, ey) = self.line_coords[0], self.line_coords[-1]
 
         def is_connected(x, y):
             return self.occdata[y, x] == 101
 
         if is_connected(sx, sy) and is_connected(ex, ey):
-            for x, y in line_coords:
+            for x, y in self.line_coords:
                 self.occdata[y, x] = 101
             self.get_logger().info(f"🧱 Sealed {direction}-axis line from ({cx},{cy})")
         else:
@@ -1070,7 +1154,7 @@ class GlobalController(Node):
             self.seal_line_along_facing_axis(21)
             self.hit_ramped = True
             time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
-            bot_current_state = GlobalController.State.Exploratory_Mapping
+            self.set_state(GlobalController.State.Exploratory_Mapping)
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
@@ -1094,23 +1178,32 @@ class GlobalController(Node):
             '''
             #uncomment if want skip heat
             #self.set_state(GlobalController.State.Launching_Balls)
-            max_heat_locations = self.find_centers(n_centers=2)
-            for location in max_heat_locations:
+            self.max_heat_locations = self.find_centers(n_centers=2)
+            self.get_logger().info(f"Max heat locations: {self.max_heat_locations}")
+            for location in self.max_heat_locations:
 
                 world_x, world_y = location
-                result = self.normal_bfs_from_world(world_x,world_y)
-                self.get_logger().info(f"Result of BFS from world: {result}")
-                if not result:
-                    self.get_logger().info("Unable to reach heat")
+                self.nav_to_goal(world_x, world_y)
+                #result = self.normal_bfs_from_world(world_x,world_y)
+                #self.get_logger().info(f"Result of BFS from world: {result}")
+                #if not result:
+                #    self.get_logger().info("Unable to reach heat")
 
                 self.get_logger().info("Goal Navigation, setting state to Launching Balls")
-                self.set_state(GlobalController.State.Launching_Balls)
+                self.stopbot()
+                time.sleep(20)
+                self.stopbot()
                 self.launch_ball()
-                time.sleep(25)
-
+                time.sleep(40)
             self.set_state(GlobalController.State.Attempting_Ramp)
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
+            x , y = self.ramp_location
+            self.nav_to_goal(x, y)
             self.drive_straight_between_walls()
+            self.stopbot()
+            time.sleep(5)
+            self.launch_ball()
+            time.sleep(50)
             pass
 
 
