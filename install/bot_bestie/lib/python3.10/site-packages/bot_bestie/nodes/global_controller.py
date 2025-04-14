@@ -10,6 +10,7 @@ from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu, LaserScan
 from tf_transformations import euler_from_quaternion
+from rclpy.action import ActionClient
 from enum import Enum, auto
 from collections import deque
 import concurrent.futures
@@ -178,7 +179,7 @@ class GlobalController(Node):
 
         # IMU Attributes stored as (timestamp, pitch)
         self.pitch_window = deque()
-        self.ramp_location = (1.0,3.0)
+        self.ramp_location = None
         self.hit_ramped = False
         # For global moving average
         self.global_pitch_sum = 0.0
@@ -201,7 +202,6 @@ class GlobalController(Node):
         self.state = GlobalController.State.Initializing
         self.previous_state = None
         self.ball_launches_attempted = 0
-        self.ramp_location = []
         self.finished_mapping = False
         self.goal_active = False
         self.just_reached_goal = False
@@ -215,6 +215,7 @@ class GlobalController(Node):
         self.distance_to_heat = None
         self.angle_to_heat = None
         self.laser_msg = None
+        self.current_goal_handle = None
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -301,7 +302,7 @@ class GlobalController(Node):
                 #TODO : adjust to the real angle range of where the sensor points
                 angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(80,100, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
-                if x is None or y is None:
+                if x is None or y is None or distance > 1: #removes anything more than 1
                     return
                 self.heat_left_world_x_y.append([x,y])
                 self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at right sensor at: {x}, {y}")  
@@ -325,7 +326,7 @@ class GlobalController(Node):
                 angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(-10,10, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
 
-                if x is None or y is None:
+                if x is None or y is None or distance > 1:
                     return
                 self.heat_right_world_x_y.append([x,y])
                 self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected front sensor at: {x}, {y}")   
@@ -470,7 +471,22 @@ class GlobalController(Node):
         else:
             self.get_logger().info("No unknown cells found in the occupancy grid.")
 
-    
+    def distance(self, x1, y1,x2, y2):
+        return math.hypot(x2 - x1, y2 - y1)
+
+    def reverse(self):
+        msg = Twist()
+        msg.linear.x = -0.1  # Negative for reverse (m/s)
+        msg.angular.z = 0.0
+        self.publisher_.publish(msg)
+
+
+        x , y , yaw= self.get_robot_global_position()
+
+        while self.distance(x,y, self.ramp_location[0], self.ramp_location[1]) < 0.15:
+            pass
+        self.stopbot()
+
     def mark_area_around_robot(self, x, y, radius=4):
         height, width = self.occdata.shape
 
@@ -728,6 +744,7 @@ class GlobalController(Node):
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
+        self.current_goal_handle = goal_handle
         if not goal_handle.accepted:
             self.get_logger().warn("❌ Goal was rejected by Nav2.")
             self.goal_active = False
@@ -1206,6 +1223,7 @@ class GlobalController(Node):
         """
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
+            self.current_goal_handle.cancel_goal_async()
             self.stopbot()
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
@@ -1251,13 +1269,15 @@ class GlobalController(Node):
             self.ramp_location = self.get_robot_global_position()
             #self.ramp_location = self.get_robot_global_position()
             #self.adaptive_seal_line()
+            self.reverse()
             self.mark_area_around_robot_as_occ(self.ramp_location[0],self.ramp_location[1],7)
             time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
             self.set_state(GlobalController.State.Exploratory_Mapping)
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
-            self.dijk_mover()
+            if not self.goal_active:
+                self.dijk_mover()
 
             ## threshold for fully maped area to cut off exploratory mapping
             if self.finished_mapping:
