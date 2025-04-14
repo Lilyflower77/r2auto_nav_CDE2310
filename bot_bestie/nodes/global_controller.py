@@ -5,6 +5,7 @@ from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped ,Twist
 from nav_msgs.msg import Odometry, OccupancyGrid
 from std_msgs.msg import Float32MultiArray, Int32
+from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
 from sensor_msgs.msg import Imu, LaserScan
@@ -141,6 +142,12 @@ class GlobalController(Node):
             qos_profile_sensor_data)
         self.scan_subscription  # prevent unused variable warning
         self.laser_range = np.array([])
+
+        self.marker_pub = self.create_publisher(
+            MarkerArray, 
+            '/visualization_markers', 
+            10)
+
 
         # Allow for global positioning 
         try: 
@@ -784,6 +791,7 @@ class GlobalController(Node):
         self.get_logger().info(f"📬 Sending goal to Nav2: x={x:.2f}, y={y:.2f}")
 
         self.goal_active = True  # Flag to prevent multiple goals
+        self.just_reached_goal = False  # Reset flag for new goal
 
         future = self.nav_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
         future.add_done_callback(self.goal_response_callback)
@@ -822,6 +830,62 @@ class GlobalController(Node):
         self.publisher_.publish(twist)
 
         self.get_logger().info(f"Driving straight | L: {left:.2f}, R: {right:.2f}, Angular: {angular_z:.2f}")
+
+    def publish_visualization_markers(self):
+        marker_array = MarkerArray()
+        marker_id = 0  # Every marker needs a unique ID
+
+        # 1. 🔴 Heat sources (green cubes)
+        for source in self.heat_left_world_x_y + self.heat_right_world_x_y:
+            if source is None:
+                continue
+            x, y = source
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "heat_sources"
+            marker.id = marker_id
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = x
+            marker.pose.position.y = y
+            marker.pose.position.z = 0.1
+            marker.scale.x = 0.2
+            marker.scale.y = 0.2
+            marker.scale.z = 0.2
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker_array.markers.append(marker)
+            marker_id += 1
+
+        # 2. 🧱 Sealed lines (red cubes)
+        for gx, gy in self.line_coords:
+            wx, wy = self.grid_to_world(gx, gy)
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "sealed_lines"
+            marker.id = marker_id
+            marker.type = Marker.CUBE
+            marker.action = Marker.ADD
+            marker.pose.position.x = wx
+            marker.pose.position.y = wy
+            marker.pose.position.z = 0.05
+            marker.scale.x = 0.2
+            marker.scale.y = 0.2
+            marker.scale.z = 0.1
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker_array.markers.append(marker)
+            marker_id += 1
+
+        # 🔄 Publish all markers
+        self.marker_pub.publish(marker_array)
+
 
     def laser_avg_angle_and_distance_in_mode_bin(self, angle_min_deg=-30, angle_max_deg=30, bin_width=0.1):
         if self.laser_msg is None:
@@ -1165,6 +1229,7 @@ class GlobalController(Node):
     def control_loop(self):
         """Slower decision-making loop (1 Hz)"""
         bot_current_state = self.get_state()
+        self.publish_visualization_markers()
         if bot_current_state == GlobalController.State.Initializing:
             self.initialise()
             self.set_state(GlobalController.State.Exploratory_Mapping)
@@ -1180,42 +1245,43 @@ class GlobalController(Node):
             self.get_logger().info("Exploratory Mapping (control_loop)...")
             self.dijk_mover()
 
-            ## TODO: set threshold for fully maped area to cut off exploratory mapping
+            ## threshold for fully maped area to cut off exploratory mapping
             if self.finished_mapping:
-                ## TODO: get robot max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
+                ## max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
                 self.get_logger().info("Finished Mapping, changing state to Goal Navigation")
                 self.set_state(GlobalController.State.Goal_Navigation)
 
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            '''
-            self.get_logger().info(str(self.latest_left_temp))
-            ## Go to max heat location then change state to Launching Balls
-            if max(self.latest_left_temp) >= 32:
-                self.stopbot()
-                self.get_logger().info("done")
-            else:
-                self.p_controller_to_twist(np.array(self.latest_left_temp).reshape((4, 4)))
-            '''
-            #uncomment if want skip heat
-            #self.set_state(GlobalController.State.Launching_Balls)
-            self.max_heat_locations = self.find_centers(n_centers=3)
-            self.get_logger().info(f"Max heat locations: {self.max_heat_locations}")
-            for location in self.max_heat_locations:
+            # Case 1: In the middle of a run (goal is active and not reached yet) → Do nothing
+            if self.goal_active and not self.just_reached_goal:
+                return  # Nothing to do yet, wait for result callback to update the flag
 
-                world_x, world_y = location
-                self.nav_to_goal(world_x, world_y)
-                #result = self.normal_bfs_from_world(world_x,world_y)
-                #self.get_logger().info(f"Result of BFS from world: {result}")
-                #if not result:
-                #    self.get_logger().info("Unable to reach heat")
-
-                self.get_logger().info("Goal Navigation, setting state to Launching Balls")
+            # Case 2: Just reached a goal → stop, launch, then check for more
+            if self.just_reached_goal:
+                self.get_logger().info("🎯 Goal reached, launching ball...")
                 self.stopbot()
-                time.sleep(35)
-                self.stopbot()
+                time.sleep(15)
                 self.launch_ball()
-                time.sleep(10)
+                time.sleep(30)
+
+                self.just_reached_goal = False
+                self.goal_active = False  # Ready for next goal
+
+            # Case 3: No goal is active → send next one if any remain
+            if not self.goal_active and self.max_heat_locations:
+                location = self.max_heat_locations.pop(0)
+                self.get_logger().info(f"📬 Sending new goal to: {location}")
+                self.nav_to_goal(*location)
+                self.goal_active = True
+
+            # Case 4: Nothing left → switch state
+            if not self.goal_active and not self.max_heat_locations:
+                self.get_logger().info("✅ All heat goals complete. Switching to ramp state.")
+                self.set_state(GlobalController.State.Attempting_Ramp)
+
+
             self.set_state(GlobalController.State.Attempting_Ramp)
+
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             x , y = self.ramp_location
             self.nav_to_goal(x, y)
