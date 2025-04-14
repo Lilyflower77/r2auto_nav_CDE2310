@@ -420,7 +420,6 @@ class GlobalController(Node):
             self.occdata[self.occdata == 1] = 0
             self.mark_area_around_robot(x, y, radius=3)
 
-
         # Safely mark visited frontiers
         for node in self.visited_frontiers:
             x, y = node
@@ -430,8 +429,6 @@ class GlobalController(Node):
                     self.mark_area_around_robot(x, y, radius=3)
 
 
-        
-        
         height, width = self.occdata.shape
 
         # Create a copy to store expanded obstacles
@@ -1003,6 +1000,7 @@ class GlobalController(Node):
         Seals a straight axis-aligned line in the direction the robot is roughly facing.
         Direction is snapped to the nearest axis (N/S/E/W).
         """
+
         # Convert robot position to grid
         world_x , world_y , yaw_rad = self.get_robot_global_position()
         cx, cy = self.world_to_grid(world_x, world_y)
@@ -1033,7 +1031,7 @@ class GlobalController(Node):
             gx = cx + i * step_x
             gy = cy + i * step_y
             #TODO: is this suppose to be x and y swapped?
-            if 0 <= gx < self.occdata.shape[1] and 0 <= gy < self.occdata.shape[0]:
+            if 0 <= gy < self.occdata.shape[0] and 0 <= gx < self.occdata.shape[1]:
                 self.line_coords.append((gx, gy))
             else:
                 return  # Abort if any part goes out of bounds
@@ -1052,6 +1050,72 @@ class GlobalController(Node):
             self.get_logger().info("❌ Not sealing: ends not connected.")
 
 
+    def adaptive_seal_line(self, length=21, max_steps=10):
+        """
+        Draws a line through the robot's current position and seals between first two
+        occupied cells from both ends. If none found, steps forward and repeats.
+        """
+        world_x, world_y, yaw_rad = self.get_robot_global_position()
+        dx = np.cos(yaw_rad)
+        dy = np.sin(yaw_rad)
+
+        # Determine axis-aligned direction
+        if abs(dx) > abs(dy):
+            direction = 'E' if dx > 0 else 'W'
+        else:
+            direction = 'N' if dy > 0 else 'S'
+
+        dir_map = {'N': (0, 1), 'S': (0, -1), 'E': (1, 0), 'W': (-1, 0)}
+        step_x, step_y = dir_map[direction]
+
+        for step in range(max_steps):
+            self.line_coords = []
+            cx, cy = self.world_to_grid(world_x, world_y)
+
+            # Build line centered at current position
+            line = []
+            half_len = length // 2
+            for i in range(-half_len, half_len + 1):
+                gx = cx + i * step_x
+                gy = cy + i * step_y
+                if 0 <= gy < self.occdata.shape[0] and 0 <= gx < self.occdata.shape[1]:
+                    line.append((gx, gy))
+                else:
+                    break  # Skip this entire step if line goes out of bounds
+
+            # Search from both ends for the first 2 occupied cells
+            start = None
+            end = None
+            for fwd, rev in zip(line, reversed(line)):
+                if start is None and self.occdata[fwd[1], fwd[0]] == 101:
+                    start = fwd
+                if end is None and self.occdata[rev[1], rev[0]] == 101:
+                    end = rev
+                if start and end:
+                    break
+
+            if start and end:
+                # Draw sealed line between start and end
+                x0, y0 = start
+                x1, y1 = end
+                dx = np.sign(x1 - x0)
+                dy = np.sign(y1 - y0)
+                x, y = x0, y0
+
+                while (x, y) != (x1 + dx, y1 + dy):
+                    if 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]:
+                        self.occdata[y, x] = 101
+                    x += dx
+                    y += dy
+
+                self.get_logger().info(f"🧱 Sealed line from {start} to {end} on step {step}")
+                return
+
+            # Step forward in direction if not found
+            world_x += step_x * self.map_resolution
+            world_y += step_y * self.map_resolution
+
+        self.get_logger().info("❌ No connected points found after all steps.")
 
     
     # =======================
