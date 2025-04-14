@@ -113,9 +113,6 @@ class GlobalController(Node):
         self.occ_subscription  # prevent unused variable warning
         self.occdata = np.array([])
 
-        self.print_map_subscription = self.create_subscription(OccupancyGrid, '/map', self.map_callback, map_qos)
-        self.print_map_subscription
-
         # temperature sensors
         self.left_temperature = self.create_subscription(
             Float32MultiArray,
@@ -227,10 +224,9 @@ class GlobalController(Node):
         self.set_state(GlobalController.State.Initializing)
 
 
-    def map_callback(self, msg: OccupancyGrid):
-        width = msg.info.width
-        height = msg.info.height
-        data = np.array(msg.data).reshape((height, width))
+    def map_callback(self):
+        width = self.occdata.shape[1]
+        height = self.occdata.shape[0]
         image = np.zeros((height, width, 3), dtype=np.uint8)
 
         #self.orange_points = [(2.0, 2.0), (3.0, 1.0)]
@@ -238,9 +234,9 @@ class GlobalController(Node):
         #self.visited_frontiers = [(1.5, 1.5), (2.5, 2.5)]
         #self.own_blocked_points = [(0.5, 0.5), (1.0, 1.0)]
         # Base map coloring
-        image[data == 101] = [0, 0, 0]           # Occupied - black
-        image[data == 0]   = [255, 255, 255]     # Free - white
-        image[data == 1]   = [127, 127, 127]     # Special Free - grey
+        image[self.occdata == 101] = [0, 0, 0]           # Occupied - black
+        image[self.occdata == 0]   = [255, 255, 255]     # Free - white
+        image[self.occdata == 1]   = [127, 127, 127]     # Special Free - grey
 
         # Helper to mark pixels
         def mark(points, color):
@@ -416,13 +412,23 @@ class GlobalController(Node):
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         #self.get_logger().info(f"Unique values in occupancy grid: {np.unique(self.occdata)}")
+        
+
+        #new stuff to ignore lidar scans
+        x, y = self.get_robot_grid_position()
+        if x is not None and y is not None:
+            self.occdata[self.occdata == 1] = 0
+            self.mark_area_around_robot(x, y, radius=3)
+
 
         # Safely mark visited frontiers
         for node in self.visited_frontiers:
             x, y = node
-            if 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]:
+            if 0 <= x< self.occdata.shape[0] and 0 <= y< self.occdata.shape[1]:
                 if self.occdata[y, x] != 101:
-                    self.occdata[y, x] = 1
+                    #self.occdata[y, x] = 1
+                    self.mark_area_around_robot(x, y, radius=3)
+
 
         
         
@@ -442,22 +448,29 @@ class GlobalController(Node):
                                 expanded_occdata[ny, nx] = 101  # Mark as occupied
         # Apply the expanded costmap
         self.occdata = expanded_occdata
-        
-               
+     
         self.occ_callback_called = True
-        #rows, cols = self.occdata.shape
-        #print(f"Occupancy Grid Size: {rows} x {cols}")
+        self.map_callback()
 
         if np.any(self.occdata == 0):
             pass
         else:
             self.get_logger().info("No unknown cells found in the occupancy grid.")
 
-        #self.plot_func()
-        
-        # 0 = Unknown
-        # 1 - 99 = Free Space
-        # >= 100 = Occupied Space
+    
+    def mark_area_around_robot(self, x, y, radius=4):
+        height, width = self.occdata.shape
+
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                gx = x + dx
+                gy = y + dy
+
+                if 0 <= gx < width and 0 <= gy < height:
+                    current_val = self.occdata[gy, gx]
+                    if current_val != 101:  # not occupied
+                        self.occdata[gy, gx] = 1
+
 
     def rotate_till_occu(self):
         self.get_logger().info("Rotating till occupied space found")
@@ -593,63 +606,6 @@ class GlobalController(Node):
                     visited.add((nx, ny))
                     queue.append((nx, ny))
         print(count)
-        return None
-    
-    def detect_closest_frontier_outside_without_processing(self, robot_pos, min_distance=2):
-
-        # Use squared distance to avoid unnecessary sqrt calculations
-        min_dist_sq = min_distance ** 2
-
-        queue = deque([robot_pos])
-        visited = set([robot_pos])
-
-        count = 0
-        while queue:
-
-            x, y = queue.popleft()
-            count += 1
-            # Calculate squared distance from the robot's position
-            dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
-
-            # Check only cells that are outside the minimum distance
-            if dist_sq >= min_dist_sq:
-                if self.is_frontier(self.occdata, x, y) and (x, y) not in self.visited_frontiers:
-                    for dx in range(-1, 2):  # Covers [-1, 0, 1]
-                        for dy in range(-1, 2):  # Covers [-1, 0, 1]
-                            nx, ny = x + dx, y + dy
-                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                                self.visited_frontiers.add((nx, ny))
-                    return (x, y)
-
-            # Explore 8-connected neighbors
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= ny < self.original_occdata.shape[0] and 0 <= nx < self.original_occdata.shape[1]:
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
-        print(count)
-        return None
-
-
-    def find_closest_unknown_outside(self, robot_pos, min_distance=2):
-       
-        queue = deque([robot_pos])
-        visited = set([robot_pos])
-        
-        while queue:
-            x, y = queue.popleft()
-            
-            # Only consider cells outside the min_distance radius
-            if math.sqrt((x - robot_pos[0])**2 + (y - robot_pos[1])**2) >= min_distance:
-                if self.occdata[x, y] == 0:
-                    return (x, y)
-            
-            # Expand search in 4-connected neighbors
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= nx < self.occdata.shape[0] and 0 <= ny < self.occdata.shape[1]:
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
         return None
 
 
@@ -1178,7 +1134,7 @@ class GlobalController(Node):
             '''
             #uncomment if want skip heat
             #self.set_state(GlobalController.State.Launching_Balls)
-            self.max_heat_locations = self.find_centers(n_centers=2)
+            self.max_heat_locations = self.find_centers(n_centers=3)
             self.get_logger().info(f"Max heat locations: {self.max_heat_locations}")
             for location in self.max_heat_locations:
 
@@ -1191,10 +1147,10 @@ class GlobalController(Node):
 
                 self.get_logger().info("Goal Navigation, setting state to Launching Balls")
                 self.stopbot()
-                time.sleep(20)
+                time.sleep(35)
                 self.stopbot()
                 self.launch_ball()
-                time.sleep(40)
+                time.sleep(10)
             self.set_state(GlobalController.State.Attempting_Ramp)
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             x , y = self.ramp_location
