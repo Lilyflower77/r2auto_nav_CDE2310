@@ -215,6 +215,7 @@ class GlobalController(Node):
         self.distance_to_heat = None
         self.angle_to_heat = None
         self.laser_msg = None
+        self.current_goal_handle = None
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -743,6 +744,7 @@ class GlobalController(Node):
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
+        self.current_goal_handle = goal_handle
         if not goal_handle.accepted:
             self.get_logger().warn("❌ Goal was rejected by Nav2.")
             self.goal_active = False
@@ -1221,7 +1223,7 @@ class GlobalController(Node):
         """
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
-            self.nav_client.action_client.cancel_all_goals_async()
+            self.current_goal_handle.cancel_goal_async()
             self.stopbot()
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
@@ -1274,7 +1276,8 @@ class GlobalController(Node):
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
-            self.dijk_mover()
+            if not self.goal_active:
+                self.dijk_mover()
 
             ## threshold for fully maped area to cut off exploratory mapping
             if self.finished_mapping:
