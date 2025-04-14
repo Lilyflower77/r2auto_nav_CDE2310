@@ -1,32 +1,33 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
-package_name = 'auto_nav'
+package_name = 'bot_bestie'
 
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name],
+    packages=find_packages(),
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/ament_index/resource_index/packages', [f'resource/{package_name}']),
+        (f'share/{package_name}', ['package.xml']),
+        (f'share/{package_name}/launch', [
+            f'{package_name}/launch/global_bringup.py',
+            f'{package_name}/launch/global_controller_bringup.py',
+            f'{package_name}/launch/nav2_bringup.py'
+        ]),
+        (f'share/{package_name}/param', [
+            f'{package_name}/param/burger.yaml'   # ← ✅ Add this line
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='nus',
-    maintainer_email='nus@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    tests_require=['pytest'],
+    maintainer='hongyi',
+    maintainer_email='hongyilin.mail@gmail.com',
+    description='ROS 2 bot_bestie navigation package',
+    license='MIT',
     entry_points={
         'console_scripts': [
-            'r2mover = auto_nav.r2mover:main',
-            'r2moverotate = auto_nav.r2moverotate:main',
-            'r2scanner = auto_nav.r2scanner:main',
-            'r2occupancy = auto_nav.r2occupancy:main',
-            'r2occupancy2 = auto_nav.r2occupancy2:main',
-            'r2auto_nav = auto_nav.r2auto_nav:main',
-            'BEAST = auto_nav.lidar_and_servo:main'
+            'global_controller = bot_bestie.nodes.global_controller:main',
+            'navigation_node = bot_bestie.nodes.navigation_node:main',
         ],
     },
 )
