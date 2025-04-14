@@ -1,0 +1,25 @@
+[0.457s] Invoking command in '/home/rex/colcon_ws/src/r2auto_nav_CDE2310': PYTHONPATH=/home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/bot_bestie build --build-base /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/build install --record /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/install.log --single-version-externally-managed install_data
+[0.625s] running egg_info
+[0.626s] writing build/bot_bestie/bot_bestie.egg-info/PKG-INFO
+[0.626s] writing dependency_links to build/bot_bestie/bot_bestie.egg-info/dependency_links.txt
+[0.626s] writing entry points to build/bot_bestie/bot_bestie.egg-info/entry_points.txt
+[0.626s] writing requirements to build/bot_bestie/bot_bestie.egg-info/requires.txt
+[0.626s] writing top-level names to build/bot_bestie/bot_bestie.egg-info/top_level.txt
+[0.627s] reading manifest file 'build/bot_bestie/bot_bestie.egg-info/SOURCES.txt'
+[0.628s] writing manifest file 'build/bot_bestie/bot_bestie.egg-info/SOURCES.txt'
+[0.628s] running build
+[0.628s] running build_py
+[0.628s] copying bot_bestie/nodes/global_controller.py -> /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/build/lib/bot_bestie/nodes
+[0.628s] running install
+[0.629s] running install_lib
+[0.630s] copying /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/build/lib/bot_bestie/nodes/global_controller.py -> /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie/nodes
+[0.630s] byte-compiling /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie/nodes/global_controller.py to global_controller.cpython-310.pyc
+[0.636s] running install_data
+[0.636s] running install_egg_info
+[0.637s] removing '/home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info' (and everything under it)
+[0.637s] Copying build/bot_bestie/bot_bestie.egg-info to /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info
+[0.639s] running install_scripts
+[0.662s] Installing global_controller script to /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/bot_bestie
+[0.662s] Installing navigation_node script to /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/bot_bestie
+[0.662s] writing list of installed files to '/home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/install.log'
+[0.682s] Invoked command in '/home/rex/colcon_ws/src/r2auto_nav_CDE2310' returned '0': PYTHONPATH=/home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/bot_bestie build --build-base /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/build install --record /home/rex/colcon_ws/src/r2auto_nav_CDE2310/build/bot_bestie/install.log --single-version-externally-managed install_data
