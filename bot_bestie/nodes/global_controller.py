@@ -758,63 +758,43 @@ class GlobalController(Node):
         return False  # No adjacent unknown cells, not a frontier
 
 
-    def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
-        """
-        Perform BFS to find the closest unexplored frontier from the robot's current grid position.
-        A frontier is a free cell adjacent to at least one unknown cell (0 in the map).
-        """
+def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
 
-        queue = deque([robot_pos])
-        visited = set([robot_pos])
+    # Use squared distance to avoid unnecessary sqrt calculations
+    queue = deque([robot_pos])
+    visited = set([robot_pos])
 
-        # Convert visited_frontiers (world coords) to grid coords for comparison
-        visited_frontiers_grid = set(
-            self.world_to_grid(x, y)
-            for (x, y) in self.visited_frontiers
-            if x is not None and y is not None
-        )
+    count = 0
+    while queue:
 
-        candidate_frontiers = []
+        x, y = queue.popleft()
+        count += 1
 
-        while queue:
-            x, y = queue.popleft()
+        visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
+        if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
+            for dx in range(-1, 2):  # Covers [-1, 0, 1]
+                for dy in range(-1, 2):  # Covers [-1, 0, 1]
+                    nx, ny = x + dx, y + dy
+                    if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                        world_x, world_y = self.grid_to_world(nx, ny)
+                        self.visited_frontiers.add((world_x, world_y))
 
-            # Skip if already visited
-            if (x, y) in visited_frontiers_grid:
-                continue
+            # 🟡 VISUALIZE THE FRONTIER CELL THAT WAS CHOSEN
+            self.publish_frontier_marker([(x, y)])
+            return (x, y)
+        else:
+            pass
+            #self.get_logger().info(f"Skipping cell ({x}, {y}) due to distance constraint.")
 
-            # Check if (x, y) is a valid frontier
-            if self.is_frontier(self.occdata, x, y):
-                # Check if it's far enough from the robot
-                dx = x - robot_pos[0]
-                dy = y - robot_pos[1]
-                if dx*dx + dy*dy >= min_distance*min_distance:
-                    # Mark this frontier as visited
-                    world_x, world_y = self.grid_to_world(x, y)
-                    self.visited_frontiers.add((world_x, world_y))
-
-                    # Optional: collect nearby frontiers for RViz
-                    for dx in range(-1, 2):
-                        for dy in range(-1, 2):
-                            nx, ny = x + dx, y + dy
-                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                                if self.is_frontier(self.occdata, nx, ny):
-                                    candidate_frontiers.append((nx, ny))
-
-                    # Visualize the frontier and nearby candidates
-                    self.publish_frontier_marker(candidate_frontiers)
-                    return (x, y)
-
-            # Explore 8-connected neighbors
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                        (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
-
-        self.get_logger().info("❌ No valid frontier found.")
-        return None
+        # Explore 8-connected neighbors
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                       (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nx, ny = x + dx, y + dy
+            if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+    print(count)
+    return None
 
 
 
