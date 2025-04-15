@@ -33,30 +33,6 @@ import os
 from PIL import Image
 
 
-'''
-# code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
-def euler_from_quaternion(x, y, z, w):
-    """
-    Convert a quaternion into euler angles (roll, pitch, yaw)
-    roll is rotation around x in radians (counterclockwise)
-    pitch is rotation around y in radians (counterclockwise)
-    yaw is rotation around z in radians (counterclockwise)
-    """
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
-
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-
-    return roll_x, pitch_y, yaw_z # in radians
-'''
 
 # constants
 rotatechange = 0.15 # was 0.1
@@ -170,13 +146,17 @@ class GlobalController(Node):
         #paramas ********************************************************
         self.angle_heat_scan = 7
         self.init_attempt_ramp = True
-        self.temp_threshold = 31 #26 original
-        self.heat_distance_max = 2.0
-        self.imu_threshold = 4.5
+        self.temp_threshold = 27 #26 original
+        self.heat_distance_max = 2.5
+        self.imu_threshold = 5.0
         self.fast_explore = False
         self.use_padding = False
+        self.padding = 1
         self.rate_of_placement = 4
-        self.ramp_backtrack = 15
+        self.ramp_backtrack = 20
+        self.imu_abs_threshold = 0.16
+        self.clusters = 3
+        
         #****************************************************************
         # Temperature Attributes
         self.latest_left_temp = None
@@ -193,6 +173,8 @@ class GlobalController(Node):
         self.pitch_window = deque()
         self.ramp_location = None
         self.hit_ramped = False
+        self.initial_yaw = None
+        
         # For global moving average
         self.global_pitch_sum = 0.0
         self.global_pitch_count = 0
@@ -203,7 +185,7 @@ class GlobalController(Node):
         self.distance_left = 0.0
         self.distance_right = 0.0
         #occ map variables
-        self.padding = 1
+        
         #heat 
         self.max_heat_locations = []
         self.normal_bfs = set()
@@ -227,10 +209,11 @@ class GlobalController(Node):
         self.angle_to_heat = None
         self.laser_msg = None
         self.current_goal_handle = []
+        self.occ_processing = False
 
         # Multi Threading functionality
         self.lock = threading.Lock()
-        # Triggers the fast loop at 10hz
+        # Triggers the fast loop at 10hz(gy == y and gx == x) or current_val
         self.fast_timer = self.create_timer(0.1, self.fast_loop)
         # Triggers the control loop at 1hz
         self.control_loop_timer = self.create_timer(1.0, self.control_loop)
@@ -252,6 +235,7 @@ class GlobalController(Node):
         #self.visited_frontiers = [(1.5, 1.5), (2.5, 2.5)]
         #self.own_blocked_points = [(0.5, 0.5), (1.0, 1.0)]
         # Base map coloring
+        self.get_logger().info(f"Unique values in occdata: {np.unique(self.occdata)}")
         image[self.occdata == 101] = [0, 0, 0]           # Occupied - black
         image[self.occdata == 0]   = [255, 255, 255]     # Free - white
         image[self.occdata == 1]   = [127, 127, 127]     # Special Free - grey
@@ -267,10 +251,10 @@ class GlobalController(Node):
                     if 0 <= i < height and 0 <= j < width:
                         image[i, j] = color
 
-        mark(self.normal_bfs, [255, 165, 0])      # Orange
-        mark(self.max_heat_locations, [0, 255, 0])         # Green
-        mark(self.visited_frontiers, [255, 255, 0])  # Yellow
-        mark(self.line_coords, [0, 0, 255])   # Blue
+        #mark(self.normal_bfs, [255, 165, 0])      # Orange
+        #mark(self.max_heat_locations, [0, 255, 0])         # Green
+        #mark(self.visited_frontiers, [255, 255, 0])  # Yellow
+        #mark(self.line_coords, [0, 0, 255])   # Blue
 
         save_dir = "/home/rex/colcon_ws/src/map_images"
         os.makedirs(save_dir, exist_ok=True)
@@ -304,6 +288,7 @@ class GlobalController(Node):
     ## Callback handers for temperature sensors
     def sensor1_callback(self, msg):
         
+        
         if msg.data and len(msg.data) == 64:
             indices = [
             18, 19, 20, 21,
@@ -316,7 +301,7 @@ class GlobalController(Node):
 
             if(self.valid_heat(self.latest_left_temp , self.temp_threshold)):
                 #TODO : adjust to the real angle range of where the sensor points
-                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(90- self.angle_heat_scan, 90 + self.angle_heat_scan, 0.1)
+                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(87- self.angle_heat_scan, 87 + self.angle_heat_scan, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
                 if x is None or y is None or distance > self.heat_distance_max: #removes anything more than 1
                     return
@@ -353,6 +338,86 @@ class GlobalController(Node):
         self.laser_msg = msg
 
         
+    def normalize_angle(angle):
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+    def pd_control(error, prev_error, kp, kd, dt):
+        derivative = (error - prev_error) / dt if dt > 0 else 0.0
+        return kp * error + kd * derivative
+
+
+    def normalize_angle(self ,angle):
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+
+    def pd_control(self, error, prev_error, kp, kd, dt):
+        derivative = (error - prev_error) / dt if dt > 0 else 0.0
+        return kp * error + kd * derivative
+
+
+    def get_lidar_distances(self):
+        if self.laser_msg is None:
+            self.get_logger().warn("No laser scan data available.")
+            return None, None, None  # front, left, right
+
+        scan_msg = self.laser_msg
+        ranges = np.array(scan_msg.ranges)
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
+        angles_deg = (np.degrees(angles) + 180) % 360 - 180  # Normalize to [-180, 180)
+
+        # Helper to extract shortest distance in sector
+        def get_shortest_in_sector(min_deg, max_deg):
+            mask = (angles_deg >= min_deg) & (angles_deg <= max_deg)
+            sector_ranges = ranges[mask]
+            valid = np.isfinite(sector_ranges) & (sector_ranges > 0.01)
+            return sector_ranges[valid].min() if np.any(valid) else None
+
+        # Extract distances
+        front_dist = get_shortest_in_sector(-5, 5)
+        left_dist  = get_shortest_in_sector(85, 95)
+        right_dist = get_shortest_in_sector(-95, -85)  # or (265, 275) if using 0–360 convention
+
+        return front_dist, left_dist, right_dist
+
+    def run_pd_until_obstacle(self, target_yaw, stop_threshold=0.2):
+        prev_yaw_error = 0.0
+        prev_wall_error = 0.0
+        prev_time = time.time()
+
+        kp_yaw, kd_yaw = 2.0, 0.1
+        kp_wall, kd_wall = 1.0, 0.05
+
+        while True:
+            current_yaw = self.get_robot_global_position()[2]
+            front_dist, left_dist, right_dist = self.get_lidar_distances()
+
+            if front_dist <= stop_threshold:
+                break
+
+            now = time.time()
+            dt = now - prev_time
+            prev_time = now
+
+            yaw_error = self.normalize_angle(target_yaw - current_yaw)
+            wall_error = right_dist - left_dist
+
+            yaw_correction = self.pd_control(yaw_error, prev_yaw_error, kp_yaw, kd_yaw, dt)
+            wall_correction = self.pd_control(wall_error, prev_wall_error, kp_wall, kd_wall, dt)
+            angular_z = yaw_correction + wall_correction
+
+            twist = Twist()
+            twist.linear.x = 0.2
+            twist.angular.z = angular_z
+            self.publisher_.publish(twist)  # assumes this global publisher exists
+
+            prev_yaw_error = yaw_error
+            prev_wall_error = wall_error
+
+            time.sleep(0.1)
+
+        # Stop the robot
+        self.publisher_.publish(Twist())
+
     ## method to launch balls
     def launch_ball(self):
         msg = Int32()
@@ -391,12 +456,13 @@ class GlobalController(Node):
             self.global_pitch_sum += abs(pitch)
             self.global_pitch_count += 1
             self.global_pitch_avg = self.global_pitch_sum / self.global_pitch_count
-
+            
+            #self.get_logger().info(f"Global Pitch Avg: {self.global_pitch_avg}")
             # Compute recent average for last 0.3s
             recent_values = [p for t, p in self.pitch_window if now - t <= 0.3]
             if recent_values:
                 self.recent_pitch_avg = sum(recent_values) / len(recent_values)    
-
+            #self.get_logger().info(f"Recent Pitch Avg: {self.recent_pitch_avg}")
     ## lidar callback
     def listener_callback(self, msg):
         # Convert LaserScan ranges to numpy array
@@ -433,6 +499,7 @@ class GlobalController(Node):
     def occ_callback(self, msg):
         #self.get_logger().info('In occ_callback - Updating Map Metadata')
         # Store map metadata
+        self.occ_processing = True
         self.map_resolution = msg.info.resolution
         self.map_origin_x = msg.info.origin.position.x
         self.map_origin_y = msg.info.origin.position.y
@@ -445,15 +512,21 @@ class GlobalController(Node):
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         #self.get_logger().info(f"Unique values in occupancy grid: {np.unique(self.occdata)}")
-        
+        self.spare_occdata = self.occdata.copy()
+
+        # 0 -> true unknown
+        # 1 -> true free space
+        # 101 -> true occupied
+        # 102 -> free but marked as unknown
+        # 103 -> marked as visited but true unknown should not be marked as visited
 
 
         #new stuff to ignore lidar scans
         if not self.fast_explore:
             x, y = self.get_robot_grid_position()
             if x is not None and y is not None:
-                self.occdata[self.occdata == 1] = 0
-                self.mark_area_around_robot(x, y, radius=3)
+                self.occdata[self.occdata == 1] = 0 #reset all lidar known scans to unknown
+                self.mark_area_around_robot(x, y, radius=4) #set as free
 
             # Safely mark visited frontiers
             for node in self.visited_frontiers:
@@ -461,7 +534,7 @@ class GlobalController(Node):
                 x, y = self.world_to_grid(x, y)
                 if 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]:
                     if self.occdata[y, x] != 101:
-                        self.mark_area_around_robot(x, y, radius=self.rate_of_placement)
+                        self.mark_area_mapped(x, y, self.rate_of_placement) #mark frontier as known space
         else:
             for node in self.visited_frontiers:
                 x, y = node
@@ -496,6 +569,9 @@ class GlobalController(Node):
         else:
             self.get_logger().info("No unknown cells found in the occupancy grid.")
 
+        self.occ_processing = False
+
+
     def distance(self, x1, y1,x2, y2):
         return math.hypot(x2 - x1, y2 - y1)
 
@@ -527,6 +603,7 @@ class GlobalController(Node):
                         self.occdata[gy, gx] = 1
 
 
+    
     def mark_area_mapped(self, x, y, max_radius=4):
         height, width = self.occdata.shape
         visited = set()
@@ -554,7 +631,8 @@ class GlobalController(Node):
                 continue  # Don't mark or expand from here
 
             # Mark as visited (e.g., 1)
-            self.occdata[gy, gx] = 1
+            if self.spare_occdata[gy,gx] != 0:
+                self.occdata[gy, gx] = 1
 
             # Expand all 8 neighbors
             for dx, dy in directions:
@@ -650,7 +728,7 @@ class GlobalController(Node):
             return False  # This cell is either occupied (101) or unknown (0)
 
         # Ensure that we are not considering the robot's current position
-        if (x, y) == (self.robot_x, self.robot_y):
+        if (x, y) == self.get_robot_grid_position():
             return False  # Exclude the robot's current position
 
         # Check for neighboring unknown cells (0)
@@ -668,8 +746,6 @@ class GlobalController(Node):
     def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
 
         # Use squared distance to avoid unnecessary sqrt calculations
-        min_dist_sq = min_distance ** 2
-
         queue = deque([robot_pos])
         visited = set([robot_pos])
 
@@ -678,20 +754,19 @@ class GlobalController(Node):
 
             x, y = queue.popleft()
             count += 1
-            # Calculate squared distance from the robot's position
-            dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
-
-            # Check only cells that are outside the minimum distance
-            if dist_sq >= min_dist_sq:
-                visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
-                if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
-                    for dx in range(-1, 2):  # Covers [-1, 0, 1]
-                        for dy in range(-1, 2):  # Covers [-1, 0, 1]
-                            nx, ny = x + dx, y + dy
-                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                                world_x, world_y = self.grid_to_world(nx, ny)
-                                self.visited_frontiers.add((world_x, world_y))
-                    return (x, y)
+           
+            visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
+            if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
+                for dx in range(-1, 2):  # Covers [-1, 0, 1]
+                    for dy in range(-1, 2):  # Covers [-1, 0, 1]
+                        nx, ny = x + dx, y + dy
+                        if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                            world_x, world_y = self.grid_to_world(nx, ny)
+                            self.visited_frontiers.add((world_x, world_y))
+                return (x, y)
+            else:
+                pass
+                #self.get_logger().info(f"Skipping cell ({x}, {y}) due to distance constraint.")
 
             # Explore 8-connected neighbors
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]:
@@ -705,7 +780,7 @@ class GlobalController(Node):
 
     def IMU_interrupt_check(self):
         with self.lock:
-            if self.global_pitch_avg > 0 and self.recent_pitch_avg > self.imu_threshold * self.global_pitch_avg: # set as 5 * moving average
+            if self.global_pitch_avg > 0 and (self.recent_pitch_avg > self.imu_threshold * self.global_pitch_avg or self.recent_pitch_avg > self.imu_abs_threshold): # set as 5 * moving average
                 self.get_logger().info("IMU Interrupt detected")
                 return True
             else:
@@ -787,7 +862,13 @@ class GlobalController(Node):
                 self.get_logger().warn("No valid robot position available.")
                 return
             
-            frontier = self.detect_closest_frontier_outside(start, min_distance=2)
+            n = 0
+            while n < 10:
+                frontier = self.detect_closest_frontier_outside(start, min_distance=2)
+                if(frontier is not None):
+                    break
+                n += 1
+                time.sleep(0.4)
             if frontier is not None:
                 world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
                 self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
@@ -1099,7 +1180,7 @@ class GlobalController(Node):
 
     def IMU_interrupt_check(self):
         with self.lock:
-            if self.global_pitch_avg > 0 and self.recent_pitch_avg > 5 * self.global_pitch_avg: # set as 5 * moving average
+            if self.global_pitch_avg > 0 and self.recent_pitch_avg > self.imu_threshold * self.global_pitch_avg: # set as 5 * moving average
                 self.get_logger().info("IMU Interrupt detected")
                 return True
             else:
@@ -1190,7 +1271,6 @@ class GlobalController(Node):
         for i in range(-half_len, half_len + 1):
             gx = cx + i * step_x
             gy = cy + i * step_y
-            #TODO: is this suppose to be x and y swapped?
             if 0 <= gy < self.occdata.shape[0] and 0 <= gx < self.occdata.shape[1]:
                 self.line_coords.append((gx, gy))
             else:
@@ -1310,6 +1390,7 @@ class GlobalController(Node):
         """
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
+
             while self.current_goal_handle:
                 goal_handle = self.current_goal_handle.pop()  # or popleft()
 
@@ -1341,7 +1422,8 @@ class GlobalController(Node):
             pass
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
-            self.drive_straight_between_walls()
+            #self.drive_straight_between_walls()
+            pass
 
 
 
@@ -1364,7 +1446,7 @@ class GlobalController(Node):
             #self.adaptive_seal_line()
             self.mark_area_around_robot_as_occ(self.ramp_location[0],self.ramp_location[1],7)
             self.get_logger().info(f"Marked area around robot as occupied")
-            x ,y, yaw = self.previous_position[-1]
+            x ,y, yaw = self.previous_position[0]
             self.nav_to_goal(x,y)
             self.get_logger().info(f"Reversing")
             time.sleep(20) # to give time for control loop to choose a new path and place a "do not go" marker
@@ -1372,10 +1454,11 @@ class GlobalController(Node):
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
-            self.dijk_mover()
-            pos = self.get_robot_global_position()
-            if pos is not None:
-                self.previous_position.append(pos)
+            if not self.occ_processing:
+                self.dijk_mover()
+                pos = self.get_robot_global_position()
+                if pos is not None:
+                    self.previous_position.append(pos)
             '''
             if not self.goal_active:
                 self.dijk_mover()
@@ -1391,10 +1474,14 @@ class GlobalController(Node):
             if self.finished_mapping:
                 ## max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
                 self.get_logger().info("Finished Mapping, changing state to Goal Navigation")
-                self.max_heat_locations = self.find_centers(2)
+                self.max_heat_locations = self.find_centers(self.clusters)
+                self.get_logger().info("🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥")
+                self.get_logger().info("🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥")
+                self.get_logger().info(f"Max heat locations: {self.max_heat_locations}")
                 self.set_state(GlobalController.State.Goal_Navigation)
 
         elif bot_current_state == GlobalController.State.Goal_Navigation:
+            '''
             # Case 1: In the middle of a run (goal is active and not reached yet) → Do nothing
             if self.goal_active and not self.just_reached_goal:
                 return  # Nothing to do yet, wait for result callback to update the flag
@@ -1424,23 +1511,53 @@ class GlobalController(Node):
                 self.set_state(GlobalController.State.Attempting_Ramp)
 
             self.set_state(GlobalController.State.Attempting_Ramp)
+            '''
+            for location in self.max_heat_locations:
+
+                world_x, world_y = location
+                self.nav_to_goal(world_x, world_y)
+                #result = self.normal_bfs_from_world(world_x,world_y)
+                #self.get_logger().info(f"Result of BFS from world: {result}")
+                #if not result:
+                #    self.get_logger().info("Unable to reach heat")
+
+                self.get_logger().info("Goal Navigation, setting state to Launching Balls")
+                self.stopbot()
+                time.sleep(20)
+                self.stopbot()
+                self.launch_ball()
+                time.sleep(40)
+            self.set_state(GlobalController.State.Attempting_Ramp)
 
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
+            if(self.ramp_location is None):
+                self.set_state(GlobalController.State.Exploratory_Mapping)
+            else:
+                x,y = self.grid_to_world(self.ramp_location[0], self.ramp_location[1])
+                self.nav_to_goal(x , y, self.initial_yaw)
+                time.sleep(30)
+                self.run_pd_until_obstacle(self.initial_yaw)
+                self.stopbot()
+                time.sleep(30)
+                self.launch_ball()
+                time.sleep(300)
+            '''
             if self.init_attempt_ramp:
                 self.line_coords =[] #remove blob
                 self.init_attempt_ramp = False
             else:
                 self.dijk_mover()
-            '''
-            if not self.goal_active:
-                self.dijk_mover()
-            else:
-                self.get_logger().info("🚫 Goal is active, skipping exploratory mapping.")
-            '''
+
+            #if not self.goal_active:
+            #    self.dijk_mover()
+            #else:
+            #    self.get_logger().info("🚫 Goal is active, skipping exploratory mapping.")
+            
             if self.finished_mapping:
                 time.sleep(30)
                 self.launch_ball()
                 time.sleep(300)
+            '''
 
             
 
@@ -1461,7 +1578,12 @@ class GlobalController(Node):
 
     def initialise(self):
         self.wait_for_map()
-        #self.rotate_till_occu()
+        pos = self.get_robot_global_position()
+        while pos is None:
+            pos = self.get_robot_global_position()
+            time.sleep(0.2)
+        x , y , yaw = pos
+        self.initial_yaw = yaw
 
 
 def main(args=None):#
