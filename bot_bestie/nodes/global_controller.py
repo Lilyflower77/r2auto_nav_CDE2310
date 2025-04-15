@@ -758,18 +758,23 @@ class GlobalController(Node):
         return False  # No adjacent unknown cells, not a frontier
 
 
-    def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
+def detect_closest_frontier_outside(self, robot_pos, min_distance=8):
+    # Use squared distance to avoid unnecessary sqrt calculations
+    min_dist_sq = min_distance ** 2
 
-        # Use squared distance to avoid unnecessary sqrt calculations
-        queue = deque([robot_pos])
-        visited = set([robot_pos])
+    queue = deque([robot_pos])
+    visited = set([robot_pos])
 
-        count = 0
-        while queue:
+    count = 0
+    while queue:
+        x, y = queue.popleft()
+        count += 1
 
-            x, y = queue.popleft()
-            count += 1
+        # Calculate squared distance from the robot's position
+        dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
 
+        # Check only cells that are outside the minimum distance
+        if dist_sq >= min_dist_sq:
             visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
             if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
                 for dx in range(-1, 2):  # Covers [-1, 0, 1]
@@ -778,23 +783,19 @@ class GlobalController(Node):
                         if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
                             world_x, world_y = self.grid_to_world(nx, ny)
                             self.visited_frontiers.add((world_x, world_y))
-
-                # 🟡 VISUALIZE THE FRONTIER CELL THAT WAS CHOSEN
                 self.publish_frontier_marker([(x, y)])
                 return (x, y)
-            else:
-                pass
-                #self.get_logger().info(f"Skipping cell ({x}, {y}) due to distance constraint.")
 
-            # Explore 8-connected neighbors
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                        (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
-        print(count)
-        return None
+        # Explore 8-connected neighbors
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                       (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nx, ny = x + dx, y + dy
+            if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+
+    print(count)
+    return None
 
 
 
