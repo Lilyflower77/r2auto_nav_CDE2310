@@ -144,9 +144,9 @@ class GlobalController(Node):
 
 
         #paramas ********************************************************
-        self.angle_heat_scan = 7
+        self.angle_heat_scan = 15
         self.init_attempt_ramp = True
-        self.temp_threshold = 27 #26 original
+        self.temp_threshold = 29 #26 original
         self.heat_distance_max = 2.5
         self.imu_threshold = 5.0
         self.fast_explore = False
@@ -156,6 +156,7 @@ class GlobalController(Node):
         self.ramp_backtrack = 20
         self.imu_abs_threshold = 0.16
         self.clusters = 3
+        self.use_laser_average = True
         
         #****************************************************************
         # Temperature Attributes
@@ -288,7 +289,12 @@ class GlobalController(Node):
     ## Callback handers for temperature sensors
     def sensor1_callback(self, msg):
         
-        
+        '''
+        if msg.data and len(msg.data) == 64:
+            indices = [
+            1,2,9,10,17,18,25,26,33,34,41,42,49,50,57,58
+        ]
+        '''
         if msg.data and len(msg.data) == 64:
             indices = [
             18, 19, 20, 21,
@@ -301,7 +307,10 @@ class GlobalController(Node):
 
             if(self.valid_heat(self.latest_left_temp , self.temp_threshold)):
                 #TODO : adjust to the real angle range of where the sensor points
-                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(87- self.angle_heat_scan, 87 + self.angle_heat_scan, 0.1)
+                if self.use_laser_average:
+                    angle , distance = self.laser_shortest_avg_angle_and_distance(87- self.angle_heat_scan, 87 + self.angle_heat_scan, 10)
+                else:
+                    angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(87- self.angle_heat_scan, 87 + self.angle_heat_scan, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
                 if x is None or y is None or distance > self.heat_distance_max: #removes anything more than 1
                     return
@@ -324,7 +333,10 @@ class GlobalController(Node):
 
             if(self.valid_heat(self.latest_right_temp ,self.temp_threshold)):
                 #TODO : adjust to the real angle range of where the sensor points
-                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(0 - self.angle_heat_scan, self.angle_heat_scan, 0.1)
+                if(self.use_laser_average):
+                    angle , distance = self.laser_shortest_avg_angle_and_distance(0 - self.angle_heat_scan, 0 + self.angle_heat_scan, 10)
+                else:
+                    angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(0 - self.angle_heat_scan, self.angle_heat_scan, 0.1)
                 x , y = self.calculate_heat_world(angle , distance)
 
                 if x is None or y is None or distance > self.heat_distance_max:
@@ -1060,6 +1072,29 @@ class GlobalController(Node):
             marker_array.markers.append(marker)
             marker_id += 1
 
+        if len(self.max_heat_locations) > 0:
+            # 3. 🔵 Maximum heat locations (blue cubes)
+            for loc in self.max_heat_locations:
+                x, y = loc
+                marker = Marker()
+                marker.header.frame_id = "map"
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.ns = "max_heat_locations"
+                marker.id = marker_id
+                marker.type = Marker.SPHERE
+                marker.action = Marker.ADD
+                marker.pose.position.x = x
+                marker.pose.position.y = y
+                marker.pose.position.z = 0.1
+                marker.scale.x = 0.1
+                marker.scale.y = 0.1
+                marker.scale.z = 0.1
+                marker.color.r = 0.0
+                marker.color.g = 0.0
+                marker.color.b = 1.0
+                marker.color.a = 1.0
+                marker_array.markers.append(marker)
+                marker_id += 1
         # 🔄 Publish all markers
         self.marker_pub.publish(marker_array)
 
@@ -1127,6 +1162,48 @@ class GlobalController(Node):
 
         return avg_angle_rad, avg_distance  # radians, meters
 
+
+    def laser_shortest_avg_angle_and_distance(self, angle_min_deg=-30, angle_max_deg=30, top_k=5):
+        if self.laser_msg is None:
+            self.get_logger().warn("No laser scan data available.")
+            return None, None
+
+        scan_msg = self.laser_msg
+        ranges = np.array(scan_msg.ranges)
+
+        # Compute angles in degrees and normalize
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
+        angles_deg = (np.degrees(angles) + 180) % 360 - 180  # Normalize to [-180, 180)
+
+        # Filter angles within specified field of view
+        mask = (angles_deg >= angle_min_deg) & (angles_deg <= angle_max_deg)
+        filtered_ranges = ranges[mask]
+        filtered_angles = angles[mask]
+
+        # Filter out invalid readings
+        valid_mask = np.isfinite(filtered_ranges) & (filtered_ranges > 0.01)
+        filtered_ranges = filtered_ranges[valid_mask]
+        filtered_angles = filtered_angles[valid_mask]
+
+        if len(filtered_ranges) == 0:
+            self.get_logger().warn("No valid laser points in the specified angle range.")
+            return None, None
+
+        # Get the top_k shortest distances
+        sorted_indices = np.argsort(filtered_ranges)
+        k = min(top_k, len(sorted_indices))  # avoid overflow
+        top_distances = filtered_ranges[sorted_indices[:k]]
+        top_angles = filtered_angles[sorted_indices[:k]]
+
+        # Compute circular average for angle
+        avg_angle_rad = np.arctan2(np.mean(np.sin(top_angles)), np.mean(np.cos(top_angles)))
+        avg_distance = np.mean(top_distances)
+
+        self.get_logger().info(
+            f"🟢 Top-{k} avg distance: {avg_distance:.2f} m, angle: {np.degrees(avg_angle_rad):.1f}°"
+        )
+
+        return avg_angle_rad, avg_distance
 
 
 
