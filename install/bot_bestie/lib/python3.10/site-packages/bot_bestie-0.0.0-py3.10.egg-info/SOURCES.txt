@@ -7,6 +7,7 @@ bot_bestie/launch/global_controller_bringup.py
 bot_bestie/launch/nav2_bringup.py
 bot_bestie/nodes/__init__.py
 bot_bestie/nodes/global_controller.py
+bot_bestie/param/burger.yaml
 build/bot_bestie/bot_bestie.egg-info/PKG-INFO
 build/bot_bestie/bot_bestie.egg-info/SOURCES.txt
 build/bot_bestie/bot_bestie.egg-info/dependency_links.txt

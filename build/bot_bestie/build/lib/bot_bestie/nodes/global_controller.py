@@ -4,11 +4,13 @@ from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped ,Twist
 from nav_msgs.msg import Odometry, OccupancyGrid
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
+from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState, ChangeState
-from sensor_msgs.msg import Imu
-#from tf_transformations import euler_from_quaternion
+from sensor_msgs.msg import Imu, LaserScan
+from tf_transformations import euler_from_quaternion
+from rclpy.action import ActionClient
 from enum import Enum, auto
 from collections import deque
 import concurrent.futures
@@ -20,7 +22,17 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 import math
 from collections import deque
 from nav2_msgs.action import NavigateToPose
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
+from sklearn.cluster import KMeans
+from collections import Counter
+import matplotlib.pyplot as plt
+import random
+import datetime
+import os
+from PIL import Image
 
+
+'''
 # code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
 def euler_from_quaternion(x, y, z, w):
     """
@@ -43,17 +55,11 @@ def euler_from_quaternion(x, y, z, w):
     yaw_z = math.atan2(t3, t4)
 
     return roll_x, pitch_y, yaw_z # in radians
-
+'''
 
 # constants
 rotatechange = 0.15 # was 0.1
-speedchange = 0.05
-occ_bins = [-1, 0, 100, 101]
-stop_distance = 0.25
-front_angle = 30
-front_angles = range(-front_angle,front_angle+1,1)
-scanfile = 'lidar.txt'
-mapfile = 'map.txt'
+stop_distance = 0.25 # distance to stop in front of heat source
 
 class GlobalController(Node):
     """
@@ -73,11 +79,13 @@ class GlobalController(Node):
         Imu_Interrupt = auto()
         Attempting_Ramp = auto()
         Returning_Home = auto()
+        Go_to_Heat_Souce = auto()
 
     def __init__(self):
         super().__init__('global_controller')
         ## initialize all publishers and subscribers
 
+        self.publisher_ = self.create_publisher(Twist,'cmd_vel',10)
         # odom
         self.odom_subscription = self.create_subscription(
         Odometry,
@@ -85,12 +93,25 @@ class GlobalController(Node):
         self.odom_callback,
         10)
 
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_RELIABLE,
+            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
+        )
+
+        self.subscription = self.create_subscription(
+            LaserScan,
+            'scan',
+            self.laser_callback,
+            qos_profile_sensor_data)
+        self.subscription  # prevent unused variable warning
+
         # occupancy grid
         self.occ_subscription = self.create_subscription(
             OccupancyGrid,
             'map',
             self.occ_callback,
-            qos_profile_sensor_data)
+            map_qos)
         self.occ_subscription  # prevent unused variable warning
         self.occdata = np.array([])
 
@@ -114,6 +135,21 @@ class GlobalController(Node):
             10
         )
 
+        # lidar subscription
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            'scan',
+            self.laser_callback,
+            qos_profile_sensor_data)
+        self.scan_subscription  # prevent unused variable warning
+        self.laser_range = np.array([])
+
+        self.marker_pub = self.create_publisher(
+            MarkerArray, 
+            '/visualization_markers', 
+            10)
+
+
         # Allow for global positioning 
         try: 
             self.tfBuffer = tf2_ros.Buffer()
@@ -121,30 +157,54 @@ class GlobalController(Node):
             self.get_logger().info("TF listener created")
         except Exception as e :
             self.get_logger().error("TF listener failed: %s" % str(e))
+
         
-        #TODO: Create a publisher for the ball launcher (maybe action etc, must have feedback for when the ball is done launching)
+        # Ball launcher
+        self.flywheel_publisher = self.create_publisher(
+            Int32, 
+            'flywheel', 
+            10)
 
 
         # Temperature Attributes
-        self.temp_and_location_data = []  # [[x, y], left_temp, right_temp]
         self.latest_left_temp = None
         self.latest_right_temp = None
+        self.unfiltered_x_y_list = []
+        self.filtered_x_y_list = []
+        self.heat_left_world_x_y = []
+        self.heat_right_world_x_y = []
+        #self.heat_left_world_x_y = self.generate_cluster((1.0, 3.0), count=5)
+        #self.heat_right_world_x_y = self.generate_cluster((2.0, 3.5), count=5)
+
 
         # IMU Attributes stored as (timestamp, pitch)
         self.pitch_window = deque()
+        self.ramp_location = None
+        self.hit_ramped = False
         # For global moving average
         self.global_pitch_sum = 0.0
         self.global_pitch_count = 0
         # For recent average (last 0.3s)
         self.recent_pitch_avg = 0.0
         self.global_pitch_avg = 0.0
-        
+        # For left and right lidar data
+        self.distance_left = 0.0
+        self.distance_right = 0.0
+        #occ map variables
+        self.padding = 1
+
+        #heat 
+        self.max_heat_locations = []
+        self.normal_bfs = set()
+        self.line_coords = []
+
         # logic attributes
         self.state = GlobalController.State.Initializing
+        self.previous_state = None
         self.ball_launches_attempted = 0
-        self.max_heat_locations = [None] * 2
-        self.ramp_location = [None]
         self.finished_mapping = False
+        self.goal_active = False
+        self.just_reached_goal = False
 
         self.occ_callback_called = False
         self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
@@ -152,6 +212,10 @@ class GlobalController(Node):
         self.nav_client.wait_for_server()
         self.get_logger().info("Nav2 Action Server available. Ready to send goals.")
         self.visited_frontiers = set()
+        self.distance_to_heat = None
+        self.angle_to_heat = None
+        self.laser_msg = None
+        self.current_goal_handle = None
 
         # Multi Threading functionality
         self.lock = threading.Lock()
@@ -164,10 +228,66 @@ class GlobalController(Node):
 
 
         self.get_logger().info('Global Controller Initialized, changing state to Exploratory Mapping')
-        self.set_state(GlobalController.State.Exploratory_Mapping)
+        self.set_state(GlobalController.State.Initializing)
+
+
+    def map_callback(self):
+        width = self.occdata.shape[1]
+        height = self.occdata.shape[0]
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+
+        #self.orange_points = [(2.0, 2.0), (3.0, 1.0)]
+        #self.green_points = [(4.0, 3.0), (5.0, 4.0)]
+        #self.visited_frontiers = [(1.5, 1.5), (2.5, 2.5)]
+        #self.own_blocked_points = [(0.5, 0.5), (1.0, 1.0)]
+        # Base map coloring
+        image[self.occdata == 101] = [0, 0, 0]           # Occupied - black
+        image[self.occdata == 0]   = [255, 255, 255]     # Free - white
+        image[self.occdata == 1]   = [127, 127, 127]     # Special Free - grey
+
+        # Helper to mark pixels
+        def mark(points, color):
+            if points is not None:
+                for p in points:
+                    if p is None:
+                        continue
+                    x, y = p
+                    i, j = self.world_to_grid(x, y)
+                    if 0 <= i < height and 0 <= j < width:
+                        image[i, j] = color
+
+        mark(self.normal_bfs, [255, 165, 0])      # Orange
+        mark(self.max_heat_locations, [0, 255, 0])         # Green
+        mark(self.visited_frontiers, [255, 255, 0])  # Yellow
+        mark(self.line_coords, [0, 0, 255])   # Blue
+
+        save_dir = "/home/rex/colcon_ws/src/map_images"
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Filename with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"occupancy_map_{timestamp}.png"
+        save_path = os.path.join(save_dir, filename)
+
+        # Save the image
+        Image.fromarray(image).save(save_path)
+
+
+    def mark_area_around_robot_as_occ(self, x, y, radius=8):
+        height, width = self.occdata.shape
+
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                gx = x + dx
+                gy = y + dy
+
+                if 0 <= gx < width and 0 <= gy < height:
+                    self.line_coords.append((gx, gy))
+                    self.occdata[gy, gx] = 101
 
     ## Callback handers for temperature sensors
     def sensor1_callback(self, msg):
+        
         if msg.data and len(msg.data) == 64:
             indices = [
             18, 19, 20, 21,
@@ -176,7 +296,17 @@ class GlobalController(Node):
             42, 43, 44, 45
         ]
             center_values = [msg.data[i] for i in indices]
-            self.latest_left_temp = sum(center_values) / len(center_values)
+            self.latest_left_temp = center_values
+
+            if(self.valid_heat(self.latest_left_temp)):
+                #TODO : adjust to the real angle range of where the sensor points
+                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(80,100, 0.1)
+                x , y = self.calculate_heat_world(angle , distance)
+                if x is None or y is None or distance > 1: #removes anything more than 1
+                    return
+                self.heat_left_world_x_y.append([x,y])
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected at right sensor at: {x}, {y}")  
+
 
     def sensor2_callback(self, msg):
         if msg.data and len(msg.data) == 64:
@@ -186,8 +316,44 @@ class GlobalController(Node):
             34, 35, 36, 37,
             42, 43, 44, 45
         ]
+            
             center_values = [msg.data[i] for i in indices]
-            self.latest_right_temp = sum(center_values) / len(center_values)
+            #self.latest_right_temp = sum(center_values) / len(center_values)
+            self.latest_right_temp = center_values
+
+            if(self.valid_heat(self.latest_right_temp)):
+                #TODO : adjust to the real angle range of where the sensor points
+                angle , distance = self.laser_avg_angle_and_distance_in_mode_bin(-10,10, 0.1)
+                x , y = self.calculate_heat_world(angle , distance)
+
+                if x is None or y is None or distance > 1:
+                    return
+                self.heat_right_world_x_y.append([x,y])
+                self.get_logger().info(f"🔥🔥🔥🔥🔥Heat source detected front sensor at: {x}, {y}")   
+
+
+
+    def laser_callback(self, msg):
+        self.laser_msg = msg
+
+        
+    ## method to launch balls
+    def launch_ball(self):
+        msg = Int32()
+        msg.data = 50
+        self.publisher_.publish(msg)
+        self.get_logger().info('Publishing: "%d"' % msg.data)
+        self.ball_launches_attempted += 1
+        self.get_logger().info(f"Ball launches attempted: {self.ball_launches_attempted}")
+
+    ## method to launch balls
+    def launch_ball(self):
+        msg = Int32()
+        msg.data = 50
+        self.flywheel_publisher.publish(msg)
+        self.get_logger().info('Publishing: "%d"' % msg.data)
+        self.ball_launches_attempted += 1
+        self.get_logger().info(f"Ball launches attempted: {self.ball_launches_attempted}")
 
     ## callback handler for IMU
     def imu_callback(self, msg):
@@ -215,11 +381,37 @@ class GlobalController(Node):
             if recent_values:
                 self.recent_pitch_avg = sum(recent_values) / len(recent_values)    
 
+    ## lidar callback
+    def listener_callback(self, msg):
+        # Convert LaserScan ranges to numpy array
+        laser_range = np.array(msg.ranges)
+
+        # Replace zeros (invalid) with nan
+        laser_range[laser_range == 0] = np.nan
+
+        # Calculate index corresponding to +30° and -30°
+        angle_increment_deg = 360 / len(laser_range)
+        index_pos_30 = int(round(30 / angle_increment_deg))
+        index_neg_30 = int(round((360 - 30) / angle_increment_deg))
+
+        # Extract the distances at those indices
+        distance_pos_30 = laser_range[index_pos_30]
+        distance_neg_30 = laser_range[index_neg_30]
+        with self.lock:
+            self.distance_left = distance_pos_30
+            self.distance_right = distance_neg_30
+
+    def generate_cluster(self, center, count=5, spread=0.2):
+        cx, cy = center
+        return [
+            (cx + random.uniform(-spread, spread), cy + random.uniform(-spread, spread))
+            for _ in range(count)
+        ]
 
     def odom_callback(self, msg):
         # self.get_logger().info('In odom_callback')
         orientation_quat = msg.pose.pose.orientation
-        self.roll, self.pitch, self.yaw = euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
+        self.roll, self.pitch, self.yaw = euler_from_quaternion([orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w])
 
 
     def occ_callback(self, msg):
@@ -230,60 +422,84 @@ class GlobalController(Node):
         self.map_origin_y = msg.info.origin.position.y
         # create numpy array
         msgdata = np.array(msg.data)
-        # compute histogram to identify percent of bins with -1
-        #occ_counts = np.histogram(msgdata,occ_bins)
-        # calculate total number of bins
-        #total_bins = msg.info.width * msg.info.height
-        # log the info
-        #self.get_logger().info('Unmapped: %i Unoccupied: %i Occupied: %i Total: %i' % (occ_counts[0][0], occ_counts[0][1], occ_counts[0][2], total_bins))
 
-        
         # make msgdata go from 0 instead of -1, reshape into 2D
         oc2 = msgdata + 1
         # reshape to 2D array using column order
         # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
         self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
         #self.get_logger().info(f"Unique values in occupancy grid: {np.unique(self.occdata)}")
-        # print to file
-        np.savetxt(mapfile, self.occdata)
+        
 
+        #new stuff to ignore lidar scans
+        x, y = self.get_robot_grid_position()
+        if x is not None and y is not None:
+            self.occdata[self.occdata == 1] = 0
+            self.mark_area_around_robot(x, y, radius=3)
+
+        # Safely mark visited frontiers
         for node in self.visited_frontiers:
-            if(self.occdata[node[1], node[0]] != 101):
-                self.occdata[node[1], node[0]] = 1
-        
-        
-        padding = 3
+            x, y = node
+            if 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]:
+                if self.occdata[y, x] != 101:
+                    #self.occdata[y, x] = 1
+                    self.mark_area_around_robot(x, y, radius=3)
+
+
         height, width = self.occdata.shape
 
         # Create a copy to store expanded obstacles
         expanded_occdata = self.occdata.copy()
+        self.original_occdata = self.occdata.copy()
 
         for y in range(height):
             for x in range(width):
                 if self.occdata[y, x] == 101:  # Only use the original grid
-                    for dy in range(-padding, padding + 1):
-                        for dx in range(-padding, padding + 1):
+                    for dy in range(-self.padding, self.padding + 1):
+                        for dx in range(-self.padding, self.padding + 1):
                             nx, ny = x + dx, y + dy  # New x, y coordinates
                             if 0 <= ny < height and 0 <= nx < width:  # Bounds check
                                 expanded_occdata[ny, nx] = 101  # Mark as occupied
         # Apply the expanded costmap
         self.occdata = expanded_occdata
-        
-               
+     
         self.occ_callback_called = True
-        #rows, cols = self.occdata.shape
-        #print(f"Occupancy Grid Size: {rows} x {cols}")
+        #self.map_callback()
 
         if np.any(self.occdata == 0):
             pass
         else:
             self.get_logger().info("No unknown cells found in the occupancy grid.")
 
-        #self.plot_func()
-        
-        # 0 = Unknown
-        # 1 - 99 = Free Space
-        # >= 100 = Occupied Space
+    def distance(self, x1, y1,x2, y2):
+        return math.hypot(x2 - x1, y2 - y1)
+
+    def reverse(self):
+        msg = Twist()
+        msg.linear.x = -0.1  # Negative for reverse (m/s)
+        msg.angular.z = 0.0
+        self.publisher_.publish(msg)
+
+
+        x , y , yaw= self.get_robot_global_position()
+
+        while self.distance(x,y, self.ramp_location[0], self.ramp_location[1]) < 0.15:
+            pass
+        self.stopbot()
+
+    def mark_area_around_robot(self, x, y, radius=4):
+        height, width = self.occdata.shape
+
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                gx = x + dx
+                gy = y + dy
+
+                if 0 <= gx < width and 0 <= gy < height:
+                    current_val = self.occdata[gy, gx]
+                    if current_val != 101:  # not occupied
+                        self.occdata[gy, gx] = 1
+
 
     def rotate_till_occu(self):
         self.get_logger().info("Rotating till occupied space found")
@@ -386,15 +602,8 @@ class GlobalController(Node):
         return False  # No adjacent unknown cells, not a frontier
 
 
-    def detect_closest_frontier_outside(self, robot_pos, min_distance=2):
-        """
-        Uses BFS to detect the closest frontier cell (free cell adjacent to unknown space)
-        that is outside the specified minimum distance from the robot.
+    def detect_closest_frontier_outside(self, robot_pos, min_distance=3):
 
-        :param robot_pos: (x, y) robot's current grid position.
-        :param min_distance: Minimum Euclidean distance (in grid cells) from the robot to ignore.
-        :return: (x, y) grid coordinates of the closest frontier, or None if not found.
-        """
         # Use squared distance to avoid unnecessary sqrt calculations
         min_dist_sq = min_distance ** 2
 
@@ -429,35 +638,6 @@ class GlobalController(Node):
         return None
 
 
-    def find_closest_unknown_outside(self, robot_pos, min_distance=2):
-        """
-        Finds the closest unknown cell (value == 0) outside the min_distance radius 
-        from the robot's current grid position.
-        
-        :param robot_pos: (rx, ry) robot's current grid coordinates.
-        :param min_distance: Minimum Euclidean distance (in grid cells) to exclude.
-        :return: (x, y) grid coordinates of the closest unknown cell outside the radius, or None if not found.
-        """
-        queue = deque([robot_pos])
-        visited = set([robot_pos])
-        
-        while queue:
-            x, y = queue.popleft()
-            
-            # Only consider cells outside the min_distance radius
-            if math.sqrt((x - robot_pos[0])**2 + (y - robot_pos[1])**2) >= min_distance:
-                if self.occdata[x, y] == 0:
-                    return (x, y)
-            
-            # Expand search in 4-connected neighbors
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nx, ny = x + dx, y + dy
-                if (nx, ny) not in visited and 0 <= nx < self.occdata.shape[0] and 0 <= ny < self.occdata.shape[1]:
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
-        return None
-
-
     def IMU_interrupt_check(self):
         with self.lock:
             if self.global_pitch_avg > 0 and self.recent_pitch_avg > 5 * self.global_pitch_avg: # set as 5 * moving average
@@ -468,20 +648,15 @@ class GlobalController(Node):
 
 
     def grid_to_world(self, grid_x, grid_y):
-        """
-        Converts grid coordinates (x, y) to world coordinates.
-        :param grid_x: Grid X position.
-        :param grid_y: Grid Y position.
-        :return: (x_world, y_world) in meters.
-        """
+
         if not hasattr(self, 'map_resolution') or not hasattr(self, 'map_origin_x'):
             self.get_logger().error("Map metadata not available.")
             return None, None
+    
+        world_x = self.map_origin_x + (grid_x * self.map_resolution)
+        world_y = self.map_origin_y + (grid_y * self.map_resolution)
 
-        x_world = self.map_origin_x + (grid_x * self.map_resolution)
-        y_world = self.map_origin_y + (grid_y * self.map_resolution)
-
-        return x_world, y_world
+        return world_x, world_y
  
 
     def stopbot(self):
@@ -503,44 +678,56 @@ class GlobalController(Node):
         self.get_logger().info("Map received. Starting Dijkstra movement.")
         
 
+
+    def valid_heat(self, array , threshold = 26.0):
+        if array is None:
+            return False
+
+        array = np.array(array)
+
+        if array.size == 0:
+            return False
+
+        if np.max(array) >= threshold:
+            return True
+
+        return False
+
+
+    def find_centers(self,n_centers = 2):
+        
+        # Apply KMeans clustering
+        kmeans = KMeans(n_clusters=n_centers, random_state=0)
+        full_list = self.heat_left_world_x_y + self.heat_right_world_x_y
+        data = np.array(full_list)  # ← your list of (x, y)
+        if(data.size == 0):
+            return
+        kmeans.fit(data)
+
+        # Get the center points
+        centers = kmeans.cluster_centers_
+        return centers
+
+
     def dijk_mover(self):
         try:
-            while rclpy.ok():
-                '''
-                #heavy slows it down but update map data regularly
-                while not self.occ_callback_called:
-                    rclpy.spin_once(self)
-                self.occ_callback_called = False
-                '''
-                rclpy.spin_once(self)
-                # Get the current position of the robot
-                start = self.get_robot_grid_position()
+            # Get the current position of the robot
+            start = self.get_robot_grid_position()
 
-                if start[0] is None or start[1] is None:
-                    self.get_logger().warn("No valid robot position available.")
-                    continue
+            if start[0] is None or start[1] is None:
+                self.get_logger().warn("No valid robot position available.")
+                return
+            
+            frontier = self.detect_closest_frontier_outside(start, min_distance=2)
+            if frontier is not None:
+                world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
+                self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
+                self.nav_to_goal(world_x, world_y)
+            else:
                 
-                #self.get_logger().info(f"Current position: ({start[0]}, {start[1]})")
-                # Find the closest frontier (unmapped cell)
-                frontier = self.detect_closest_frontier_outside(start, min_distance=2)
-                #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
-                if frontier is not None:
-                    # Convert the frontier grid coordinates to world coordinates
-                    world_x, world_y = self.grid_to_world(frontier[0], frontier[1])
-                    #self.get_logger().info(f"Frontier detected at ({frontier[0]}, {frontier[1]})")
-                    # Send Nav2 goal to the frontier and wait for confirmation
-                    self.get_logger().info(f"Navigating to closest unmapped cell at {world_x}, {world_y}")
-                    goal_reached = self.send_nav_goal(world_x, world_y)
-
-                    if goal_reached:
-                        #self.get_logger().info("Robot successfully navigated to the frontier. Proceeding to the next frontier.")
-                        time.sleep(1)  # Small delay before next iteration
-                    else:
-                        self.get_logger().warn("Failed to reach the goal, retrying or taking action.")
-                else:
-                    self.get_logger().warn("No frontiers found. Robot is stuck!")
-                    #print(self.occdata[start[0], start[1]])
-                    #print(np.unique(self.occdata))
+                self.finished_mapping = True
+                self.get_logger().warn("No frontiers found. Robot is stuck!")
+                
 
                 
         except Exception as e:
@@ -551,36 +738,257 @@ class GlobalController(Node):
             self.stopbot()
 
 
-    def send_nav_goal(self, x, y, yaw=0.0):
-        goal_msg = NavigateToPose.Goal()
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        #self.get_logger().info(f"[Feedback] Distance remaining: {feedback.distance_remaining:.2f}")
 
-        # Set frame and timestamp
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        self.current_goal_handle = goal_handle
+        if not goal_handle.accepted:
+            self.get_logger().warn("❌ Goal was rejected by Nav2.")
+            self.goal_active = False
+            return
+
+        self.get_logger().info("✅ Goal accepted by Nav2.")
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.goal_result_callback)
+
+
+
+    def calculate_heat_world(self , angle_to_heat , distance_to_heat):
+        temp = self.get_robot_global_position()
+        if(temp is None):
+            self.get_logger().warn("Unable to calculate heat grid, no robot position.")
+            return None , None
+        x,y,yaw = temp
+        if x is None or y is None or angle_to_heat is None or distance_to_heat is None:
+            self.get_logger().warn("Unagle to calculate heat grid, missing data.")
+            return None , None
+        #angle in rad
+        return self.polar_to_world_coords(angle_to_heat, distance_to_heat, x, y, yaw)
+        
+
+    def world_to_grid(self,x_world, y_world):
+        
+        if not hasattr(self, 'map_resolution') or not hasattr(self, 'map_origin_x'):
+            self.get_logger().error("Map metadata not available.")
+            return None, None
+        
+        origin_x = self.map_origin_x
+        origin_y = self.map_origin_y
+        resolution = self.map_resolution
+        grid_x = int((x_world - origin_x) / resolution)
+        grid_y = int((y_world - origin_y) / resolution)
+        return grid_x, grid_y
+
+
+    def goal_result_callback(self, future):
+        try:
+            self.goal_active = False
+            result_msg = future.result()
+            status = result_msg.status  # ✅ status is here
+            result = result_msg.result  # this is the NavigateToPose_Result message
+
+            self.get_logger().info(f"🏁 Nav2 goal finished with status: {status}")
+
+            if status == 3:  # STATUS_SUCCEEDED
+                self.reached_heat = True
+                self.get_logger().info("🎯 Goal reached successfully!")
+                self.just_reached_goal = True
+            else:
+                self.get_logger().warn(f"⚠️ Goal ended with failure status: {status}")
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Exception in goal_result_callback: {e}")
+
+
+
+    def nav_to_goal(self, x, y, yaw=0.0):
+        goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = 'map'
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
 
-        # Set target position
         goal_msg.pose.pose.position.x = x
         goal_msg.pose.pose.position.y = y
         goal_msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal_msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
 
-        #self.get_logger().info(f'Sending goal: x={x}, y={y}')
-        
-        # Send goal asynchronously
-        send_goal_future = self.nav_client.send_goal_async(goal_msg)
-        
-        # Wait for the result to be completed
-        rclpy.spin_until_future_complete(self, send_goal_future)
+        self.get_logger().info(f"📬 Sending goal to Nav2: x={x:.2f}, y={y:.2f}")
 
-        # Check if the goal was successfully completed
-        result = send_goal_future.result()
+        self.goal_active = True  # Flag to prevent multiple goals
+        self.just_reached_goal = False  # Reset flag for new goal
 
-        if result and result.status == 2:  # Status 2 means goal succeeded
-            self.get_logger().info("Goal successfully reached!")
-            return True  # Confirmation received, goal reached successfully
-        else:
-            self.get_logger().warn("Goal failed or was preempted!")
-            return False  # Goal failed, need to retry or handle error
+        future = self.nav_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        future.add_done_callback(self.goal_response_callback)
+
+    def drive_straight_between_walls(self, base_speed=0.1, correction_gain=0.5, max_angular=0.3):
+        """
+        Drives the robot forward while adjusting orientation to stay centered between left and right walls.
+
+        :param base_speed: Constant forward linear velocity.
+        :param correction_gain: Tuning factor to determine angular adjustment strength.
+        :param max_angular: Maximum allowable angular velocity.
+        """
+        with self.lock:
+            left = self.distance_left
+            right = self.distance_right
+
+        # Ignore if one of the sides is invalid (NaN)
+        if np.isnan(left) or np.isnan(right):
+            self.get_logger().warn("Invalid LIDAR data — cannot drive straight.")
+            self.stopbot()
+            return
+
+        # Calculate error: if left is further than right, turn left slightly (and vice versa)
+        error = left - right
+
+        # Simple proportional controller to correct orientation
+        angular_z = correction_gain * error
+
+        # Clamp angular velocity to prevent oversteering
+        angular_z = max(min(angular_z, max_angular), -max_angular)
+
+        # Create and publish the twist command
+        twist = Twist()
+        twist.linear.x = base_speed
+        twist.angular.z = angular_z
+        self.publisher_.publish(twist)
+
+        self.get_logger().info(f"Driving straight | L: {left:.2f}, R: {right:.2f}, Angular: {angular_z:.2f}")
+
+    def publish_visualization_markers(self):
+        marker_array = MarkerArray()
+        marker_id = 0  # Every marker needs a unique ID
+
+        
+        # 1. 🔴 Heat sources (green cubes)
+        for source in self.heat_left_world_x_y + self.heat_right_world_x_y:
+            if source is None:
+                continue
+            x, y = source
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "heat_sources"
+            marker.id = marker_id
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = x
+            marker.pose.position.y = y
+            marker.pose.position.z = 0.1
+            marker.scale.x = 0.1
+            marker.scale.y = 0.1
+            marker.scale.z = 0.1
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker_array.markers.append(marker)
+            marker_id += 1
+
+        # 2. 🧱 Sealed lines (red cubes)
+        for gx, gy in self.line_coords:
+            wx, wy = self.grid_to_world(gx, gy)
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "sealed_lines"
+            marker.id = marker_id
+            marker.type = Marker.CUBE
+            marker.action = Marker.ADD
+            marker.pose.position.x = wx
+            marker.pose.position.y = wy
+            marker.pose.position.z = 0.05
+            marker.scale.x = 0.05
+            marker.scale.y = 0.05
+            marker.scale.z = 0.05
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker_array.markers.append(marker)
+            marker_id += 1
+
+        # 🔄 Publish all markers
+        self.marker_pub.publish(marker_array)
+
+
+    def laser_avg_angle_and_distance_in_mode_bin(self, angle_min_deg=-30, angle_max_deg=30, bin_width=0.1):
+        if self.laser_msg is None:
+            self.get_logger().warn("No laser scan data available.")
+            return None, None
+
+        scan_msg = self.laser_msg
+        ranges = np.array(scan_msg.ranges)
+
+        # Compute angles (radians) for each scan index
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
+        angles_deg = np.degrees(angles)
+
+        # Normalize angles to [-180°, 180°)
+        angles_deg = (angles_deg + 180) % 360 - 180
+
+        # Filter angles within specified field of view
+        mask = (angles_deg >= angle_min_deg) & (angles_deg <= angle_max_deg)
+        filtered_ranges = ranges[mask]
+        filtered_angles = angles[mask]  # still in radians
+
+        # Debug filtered range
+        self.get_logger().info(
+            f"📐 Filtered angle range: {angles_deg[mask].min():.1f}° to {angles_deg[mask].max():.1f}°, "
+            f"Count: {np.count_nonzero(mask)}"
+        )
+
+        # Filter out invalid range readings
+        valid_mask = np.isfinite(filtered_ranges) & (filtered_ranges > 0.01)
+        filtered_ranges = filtered_ranges[valid_mask]
+        filtered_angles = filtered_angles[valid_mask]
+
+        if len(filtered_ranges) == 0:
+            self.get_logger().warn("No valid laser points in the specified angle range.")
+            return None, None
+
+        # Bin distances into fixed-width intervals
+        binned = np.floor(filtered_ranges / bin_width).astype(int)
+        from collections import Counter
+        mode_bin, _ = Counter(binned).most_common(1)[0]
+
+        # Extract the mode bin values
+        bin_min = mode_bin * bin_width
+        bin_max = bin_min + bin_width
+        in_mode = (filtered_ranges >= bin_min) & (filtered_ranges < bin_max)
+        mode_distances = filtered_ranges[in_mode]
+        mode_angles = filtered_angles[in_mode]
+
+        if len(mode_angles) == 0:
+            self.get_logger().warn("No points in mode bin.")
+            return None, None
+
+        # ✅ Use circular mean for angles to prevent wrap-around issues
+        avg_angle_rad = np.arctan2(np.mean(np.sin(mode_angles)), np.mean(np.cos(mode_angles)))
+        avg_angle_deg = (np.degrees(avg_angle_rad) + 180) % 360 - 180
+
+        avg_distance = np.mean(mode_distances)
+
+        self.get_logger().info(
+            f"🟢 Mode distance: {avg_distance:.2f} m, Mode angle: {avg_angle_deg:.1f}°"
+        )
+
+        return avg_angle_rad, avg_distance  # radians, meters
+
+
+
+
+    def polar_to_world_coords(self, avg_angle_rad, avg_distance, robot_x, robot_y, robot_yaw_rad):
+        x_local = avg_distance * math.cos(avg_angle_rad)
+        y_local = avg_distance * math.sin(avg_angle_rad)
+
+        x_world = robot_x + (x_local * math.cos(robot_yaw_rad)) - (y_local * math.sin(robot_yaw_rad))
+        y_world = robot_y + (x_local * math.sin(robot_yaw_rad)) + (y_local * math.cos(robot_yaw_rad))
+        return (x_world, y_world)
+
+
 
     # =======================
     # Thread safe State Management
@@ -597,7 +1005,6 @@ class GlobalController(Node):
         with self.lock:
             return self.state
         
-    '''
     def get_robot_global_position(self):
         try:
             now = rclpy.time.Time()
@@ -619,20 +1026,7 @@ class GlobalController(Node):
         except Exception as e:
             self.get_logger().warn(f"[TF] Failed to get global robot position: {e}")
             return None
-    '''
 
-    def log_temperature(self):
-        position = self.get_robot_global_position()
-        if position is None:
-            return  # Skip if tf lookup failed
-
-        with self.lock:
-            if self.latest_left_temp is not None and self.latest_right_temp is not None:
-                self.temp_and_location_data.append([
-                    position,
-                    self.latest_left_temp,
-                    self.latest_right_temp
-                ])
 
     def IMU_interrupt_check(self):
         with self.lock:
@@ -642,8 +1036,182 @@ class GlobalController(Node):
             else:
                 return False
 
-    
 
+    def is_valid(self, neighbor, visited):
+        x, y = neighbor
+        return (x, y) not in visited and 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]
+
+    def is_within_map(self , neighbour):
+        x, y = neighbour
+        return 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]
+
+    def normal_bfs_from_world(self , world_x, world_y):
+        grid_x , grid_y = self.world_to_grid(world_x,world_y)
+
+
+        # Initialize frontier with a starting point
+        frontier = deque()
+        start = (grid_x, grid_y)  # Replace x and y with your starting coords
+        frontier.append(start)
+
+        # Set to keep track of visited nodes
+        self.normal_bfs.add(start)
+
+        # Example grid directions (8-connected)
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1),(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        count = 0
+        self.reached_heat = False
+        while frontier:
+            #self.get_logger().info(f"Frontier is at: {frontier}")
+            if(self.reached_heat):
+                return True
+            
+            if not self.goal_active:
+                count += 1
+                current = frontier.popleft()
+
+                x,y = current
+                if(self.is_within_map(current) and self.occdata[y,x] == 1):
+                    cur_x , cur_y  = self.grid_to_world(x,y)
+                    self.nav_to_goal(cur_x , cur_y)
+
+            
+                for dx, dy in directions:
+                    neighbor = (current[0] + dx, current[1] + dy)
+                    if self.is_valid(neighbor, self.normal_bfs):
+                        frontier.append(neighbor)
+                        self.normal_bfs.add(neighbor)
+                
+                self.get_logger().info(f"Current position: {current} | Visited count: {len(self.normal_bfs)}")
+        return False
+                    
+
+    def seal_line_along_facing_axis(self ,length=21):
+        """
+        Seals a straight axis-aligned line in the direction the robot is roughly facing.
+        Direction is snapped to the nearest axis (N/S/E/W).
+        """
+
+        # Convert robot position to grid
+        world_x , world_y , yaw_rad = self.get_robot_global_position()
+        cx, cy = self.world_to_grid(world_x, world_y)
+
+        # Determine axis-aligned direction
+        dx = np.cos(yaw_rad)
+        dy = np.sin(yaw_rad)
+
+        if abs(dx) > abs(dy):
+            # More aligned with x-axis
+            direction = 'E' if dx > 0 else 'W'
+        else:
+            # More aligned with y-axis
+            direction = 'N' if dy > 0 else 'S'
+
+        # Pick unit vector for direction
+        dir_map = {
+            'N': (0, 1),
+            'S': (0, -1),
+            'E': (1, 0),
+            'W': (-1, 0)
+        }
+        step_x, step_y = dir_map[direction]
+
+        half_len = length // 2
+
+        for i in range(-half_len, half_len + 1):
+            gx = cx + i * step_x
+            gy = cy + i * step_y
+            #TODO: is this suppose to be x and y swapped?
+            if 0 <= gy < self.occdata.shape[0] and 0 <= gx < self.occdata.shape[1]:
+                self.line_coords.append((gx, gy))
+            else:
+                return  # Abort if any part goes out of bounds
+
+        # Check ends
+        (sx, sy), (ex, ey) = self.line_coords[0], self.line_coords[-1]
+
+        def is_connected(x, y):
+            return self.occdata[y, x] == 101
+
+        if is_connected(sx, sy) and is_connected(ex, ey):
+            for x, y in self.line_coords:
+                self.occdata[y, x] = 101
+            self.get_logger().info(f"🧱 Sealed {direction}-axis line from ({cx},{cy})")
+        else:
+            self.get_logger().info("❌ Not sealing: ends not connected.")
+
+
+    def adaptive_seal_line(self, length=21, max_steps=10):
+        """
+        Draws a line through the robot's current position and seals between first two
+        occupied cells from both ends. If none found, steps forward and repeats.
+        """
+        world_x, world_y, yaw_rad = self.get_robot_global_position()
+        dx = np.cos(yaw_rad)
+        dy = np.sin(yaw_rad)
+
+        # Determine axis-aligned direction
+        if abs(dx) > abs(dy):
+            direction = 'E' if dx > 0 else 'W'
+        else:
+            direction = 'N' if dy > 0 else 'S'
+
+        dir_map = {'N': (0, 1), 'S': (0, -1), 'E': (1, 0), 'W': (-1, 0)}
+        step_x, step_y = dir_map[direction]
+
+        for step in range(max_steps):
+            self.line_coords = []
+            cx, cy = self.world_to_grid(world_x, world_y)
+
+            # Build line centered at current position
+            line = []
+            half_len = length // 2
+            for i in range(-half_len, half_len + 1):
+                gx = cx + i * step_x
+                gy = cy + i * step_y
+                if 0 <= gy < self.occdata.shape[0] and 0 <= gx < self.occdata.shape[1]:
+                    line.append((gx, gy))
+                else:
+                    break  # Skip this entire step if line goes out of bounds
+
+            # Search from both ends for the first 2 occupied cells
+            start = None
+            end = None
+            for fwd, rev in zip(line, reversed(line)):
+                if start is None and self.occdata[fwd[1], fwd[0]] == 101:
+                    start = fwd
+                if end is None and self.occdata[rev[1], rev[0]] == 101:
+                    end = rev
+                if start and end:
+                    break
+
+            if start and end:
+                # Draw sealed line between start and end
+                final_line = []
+                x0, y0 = start
+                x1, y1 = end
+                dx = np.sign(x1 - x0)
+                dy = np.sign(y1 - y0)
+                x, y = x0, y0
+
+                while (x, y) != (x1 + dx, y1 + dy):
+                    if 0 <= y < self.occdata.shape[0] and 0 <= x < self.occdata.shape[1]:
+                        self.occdata[y, x] = 101
+                        final_line.append((x, y))
+                    x += dx
+                    y += dy
+
+                self.line_coords = final_line
+                self.get_logger().info(f"🧱 Sealed line from {start} to {end} on step {step}")
+                return
+
+            # Step forward in direction if not found
+            world_x += step_x * self.map_resolution
+            world_y += step_y * self.map_resolution
+
+        self.get_logger().info("❌ No connected points found after all steps.")
+
+    
     # =======================
     # Fast Loop (10 Hz) – Sensor Polling
     # =======================
@@ -655,28 +1223,33 @@ class GlobalController(Node):
         """
         bot_current_state = self.get_state()
         if bot_current_state == GlobalController.State.Imu_Interrupt:
-            self.get_logger().info("IMU Interrupt detected, Stopping all movement")
-            # TODO: replace with a call to the controller to stop all movement
-            time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
+            self.current_goal_handle.cancel_goal_async()
+            self.stopbot()
             pass
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
-            self.get_logger().info("Exploratory Mapping...")
-            if self.IMU_interrupt_check: ## IMU interrupt is true
+            if(self.previous_state != bot_current_state):
+                self.get_logger().info("Exploratory Mapping...")
+                self.previous_state = bot_current_state
+            if self.IMU_interrupt_check() and not self.hit_ramped: ## IMU interrupt is true
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
-            self.log_temperature()
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            if self.IMU_interrupt_check: ## IMU interrupt is true
+            if self.IMU_interrupt_check() and not self.hit_ramped:
                 self.set_state(GlobalController.State.Imu_Interrupt)
                 self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
+        elif bot_current_state == GlobalController.State.Go_to_Heat_Souce:
+            self.IMU_interrupt_check()
+
+        
+
         elif bot_current_state == GlobalController.State.Launching_Balls:
             ## do nothing, waiting on controller to change state, this state should be idle
             pass
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
-            pass
+            self.drive_straight_between_walls()
 
 
 
@@ -687,39 +1260,82 @@ class GlobalController(Node):
     def control_loop(self):
         """Slower decision-making loop (1 Hz)"""
         bot_current_state = self.get_state()
-        if bot_current_state == GlobalController.State.Imu_Interrupt:
-            self.get_logger().info("IMU Interrupt detected from control loop, walling off are and setting alternative goal")
-            # TODO: Create function to change map to wall off area and reset goal
+        self.publish_visualization_markers()
+        if bot_current_state == GlobalController.State.Initializing:
+            self.initialise()
+            self.set_state(GlobalController.State.Exploratory_Mapping)
+        elif bot_current_state == GlobalController.State.Imu_Interrupt:
+            self.get_logger().info("🛤🛤🛤🛤🛤IMU Interrupt detected from control loop, walling off are and setting alternative goal")
+            self.ramp_location = self.get_robot_global_position()
+            #self.ramp_location = self.get_robot_global_position()
+            #self.adaptive_seal_line()
+            self.reverse()
+            self.mark_area_around_robot_as_occ(self.ramp_location[0],self.ramp_location[1],7)
+            time.sleep(5) # to give time for control loop to choose a new path and place a "do not go" marker
+            self.set_state(GlobalController.State.Exploratory_Mapping)
 
         elif bot_current_state == GlobalController.State.Exploratory_Mapping:
             self.get_logger().info("Exploratory Mapping (control_loop)...")
-            ## TODO: create new goal and go as per rex's OG code autonav (define NAV2 behavior in diff nav2_controller.py file)
+            if not self.goal_active:
+                self.dijk_mover()
 
-            ## TODO: set threshold for fully maped area to cut off exploratory mapping
+            ## threshold for fully maped area to cut off exploratory mapping
             if self.finished_mapping:
-                ## TODO: get robot max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
+                ## max heat positions and set goal to the max heat position (stored in self.temp_and_location_data), store it in self.max_heat_locations
                 self.get_logger().info("Finished Mapping, changing state to Goal Navigation")
                 self.set_state(GlobalController.State.Goal_Navigation)
 
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            ## Go to max heat location then change state to Launching Balls
-            for location in self.max_heat_locations:
-                #TODO: create function to set goal to location (this implementation should be a blocking function)
-                # after the go to location has returned
-                self.get_logger().info("Goal Navigation, setting state to Launching Balls")
-                self.set_state(GlobalController.State.Launching_Balls)
-                
-        elif bot_current_state == GlobalController.State.Launching_Balls:
-            ## publish to the ball launcher
-            self.get_logger().info("Launching Balls...")
-            ## TODO: create function to launch balls from the publisher
+            # Case 1: In the middle of a run (goal is active and not reached yet) → Do nothing
+            if self.goal_active and not self.just_reached_goal:
+                return  # Nothing to do yet, wait for result callback to update the flag
+
+            # Case 2: Just reached a goal → stop, launch, then check for more
+            if self.just_reached_goal:
+                self.get_logger().info("🎯 Goal reached, launching ball...")
+                self.stopbot()
+                time.sleep(15)
+                self.launch_ball()
+                time.sleep(30)
+
+                self.just_reached_goal = False
+                self.goal_active = False  # Ready for next goal
+
+            # Case 3: No goal is active → send next one if any remain
+            if not self.goal_active and self.max_heat_locations:
+                location = self.max_heat_locations.pop(0)
+                self.get_logger().info(f"📬 Sending new goal to: {location}")
+                self.nav_to_goal(*location)
+                self.goal_active = True
+
+            # Case 4: Nothing left → switch state
+            if not self.goal_active and not self.max_heat_locations:
+                self.get_logger().info("✅ All heat goals complete. Switching to ramp state.")
+                self.set_state(GlobalController.State.Attempting_Ramp)
+
+
+            self.set_state(GlobalController.State.Attempting_Ramp)
+
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
-            ## check for ramp using IMU Data (potentially), poll for when IMU is flat, so there is no pitch meaning the top of the remp has been reached
-            pass
+            if self.ramp_location is None:
+                time.sleep(300)
+            else:
+                x , y = self.ramp_location
+                self.nav_to_goal(x, y)
+                #self.drive_straight_between_walls()
+                self.stopbot()
+                time.sleep(5)
+                self.launch_ball()
+                time.sleep(50)
 
 
 
-def main(args=None):
+    def initialise(self):
+        self.wait_for_map()
+        self.rotate_till_occu()
+
+
+def main(args=None):#
     rclpy.init(args=args)
 
     # ✅ Use MultiThreadedExecutor to support timers + background tasks
@@ -727,8 +1343,6 @@ def main(args=None):
 
     global_controller = GlobalController()
     executor.add_node(global_controller)
-    global_controller.wait_for_map()
-    global_controller.rotate_till_occu()
 
     try:
         executor.spin()

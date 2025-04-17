@@ -9,6 +9,7 @@
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/share/bot_bestie/launch/global_bringup.py
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/share/bot_bestie/launch/global_controller_bringup.py
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/share/bot_bestie/launch/nav2_bringup.py
+/home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/share/bot_bestie/param/burger.yaml
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info/zip-safe
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info/entry_points.txt
 /home/rex/colcon_ws/src/r2auto_nav_CDE2310/install/bot_bestie/lib/python3.10/site-packages/bot_bestie-0.0.0-py3.10.egg-info/dependency_links.txt
