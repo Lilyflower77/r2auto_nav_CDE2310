@@ -149,17 +149,17 @@ class GlobalController(Node):
         #paramas ********************************************************
         self.angle_heat_scan = 15
         self.init_attempt_ramp = True
-        self.temp_threshold = 29 #26 original
-        self.heat_distance_max = 2.5
+        self.temp_threshold = 27 #26 original
+        self.heat_distance_max = 6
         self.imu_threshold = 5.0
-        self.fast_explore = False
+        self.fast_explore = True
         self.use_padding = False
         self.padding = 1
         self.rate_of_placement = 4
         self.ramp_backtrack = 20
         self.imu_abs_threshold = 0.16
-        self.clusters = 3
-        self.use_laser_average = True
+        self.clusters = 2
+        self.use_laser_average = False
         
         #****************************************************************
         # Temperature Attributes
@@ -758,44 +758,44 @@ class GlobalController(Node):
         return False  # No adjacent unknown cells, not a frontier
 
 
-def detect_closest_frontier_outside(self, robot_pos, min_distance=8):
-    # Use squared distance to avoid unnecessary sqrt calculations
-    min_dist_sq = min_distance ** 2
+    def detect_closest_frontier_outside(self, robot_pos, min_distance=8):
+        # Use squared distance to avoid unnecessary sqrt calculations
+        min_dist_sq = min_distance ** 2
 
-    queue = deque([robot_pos])
-    visited = set([robot_pos])
+        queue = deque([robot_pos])
+        visited = set([robot_pos])
 
-    count = 0
-    while queue:
-        x, y = queue.popleft()
-        count += 1
+        count = 0
+        while queue:
+            x, y = queue.popleft()
+            count += 1
 
-        # Calculate squared distance from the robot's position
-        dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
+            # Calculate squared distance from the robot's position
+            dist_sq = (x - robot_pos[0])**2 + (y - robot_pos[1])**2
 
-        # Check only cells that are outside the minimum distance
-        if dist_sq >= min_dist_sq:
-            visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
-            if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
-                for dx in range(-1, 2):  # Covers [-1, 0, 1]
-                    for dy in range(-1, 2):  # Covers [-1, 0, 1]
-                        nx, ny = x + dx, y + dy
-                        if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                            world_x, world_y = self.grid_to_world(nx, ny)
-                            self.visited_frontiers.add((world_x, world_y))
-                self.publish_frontier_marker([(x, y)])
-                return (x, y)
+            # Check only cells that are outside the minimum distance
+            if dist_sq >= min_dist_sq:
+                visited_frontiers_grid = list(map(lambda pt: self.world_to_grid(pt[0], pt[1]), self.visited_frontiers))
+                if self.is_frontier(self.occdata, x, y) and (x, y) not in visited_frontiers_grid:
+                    for dx in range(-1, 2):  # Covers [-1, 0, 1]
+                        for dy in range(-1, 2):  # Covers [-1, 0, 1]
+                            nx, ny = x + dx, y + dy
+                            if 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                                world_x, world_y = self.grid_to_world(nx, ny)
+                                self.visited_frontiers.add((world_x, world_y))
+                    self.publish_frontier_marker([(x, y)])
+                    return (x, y)
 
-        # Explore 8-connected neighbors
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                       (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-            nx, ny = x + dx, y + dy
-            if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
-                visited.add((nx, ny))
-                queue.append((nx, ny))
+            # Explore 8-connected neighbors
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                        (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in visited and 0 <= ny < self.occdata.shape[0] and 0 <= nx < self.occdata.shape[1]:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
 
-    print(count)
-    return None
+        print(count)
+        return None
 
 
 
@@ -1507,31 +1507,32 @@ def detect_closest_frontier_outside(self, robot_pos, min_distance=8):
         This should NEVER block.
         """
         bot_current_state = self.get_state()
-        if bot_current_state == GlobalController.State.Imu_Interrupt:
+        # if bot_current_state == GlobalController.State.Imu_Interrupt:
 
-            while self.current_goal_handle:
-                goal_handle = self.current_goal_handle.pop()  # or popleft()
+        #     while self.current_goal_handle:
+        #         goal_handle = self.current_goal_handle.pop()  # or popleft()
 
-                if goal_handle.status in (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING):
-                    self.get_logger().info("🛑 Cancelling active goal...")
-                    goal_handle.cancel_goal_async()
-            self.stopbot()
-            pass
-        elif bot_current_state == GlobalController.State.Exploratory_Mapping:
+        #         if goal_handle.status in (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING):
+        #             self.get_logger().info("🛑 Cancelling active goal...")
+        #             goal_handle.cancel_goal_async()
+        #     self.stopbot()
+        #     pass
+        if bot_current_state == GlobalController.State.Exploratory_Mapping:
             if(self.previous_state != bot_current_state):
                 self.get_logger().info("Exploratory Mapping...")
                 self.previous_state = bot_current_state
-            if self.IMU_interrupt_check() and not self.hit_ramped: ## IMU interrupt is true
-                self.set_state(GlobalController.State.Imu_Interrupt)
-                self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
+            # if self.IMU_interrupt_check() and not self.hit_ramped: ## IMU interrupt is true
+            #     self.set_state(GlobalController.State.Imu_Interrupt)
+            #     self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
         elif bot_current_state == GlobalController.State.Goal_Navigation:
-            if self.IMU_interrupt_check() and not self.hit_ramped:
-                self.set_state(GlobalController.State.Imu_Interrupt)
-                self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
+            # if self.IMU_interrupt_check() and not self.hit_ramped:
+            #     self.set_state(GlobalController.State.Imu_Interrupt)
+            #     self.get_logger().info("IMU Interrupt detected, changing state to IMU Interrupt")
             pass
         elif bot_current_state == GlobalController.State.Go_to_Heat_Souce:
-            self.IMU_interrupt_check()
+            # self.IMU_interrupt_check()
+            pass
 
         
 
@@ -1645,7 +1646,7 @@ def detect_closest_frontier_outside(self, robot_pos, min_distance=8):
                 self.stopbot()
                 self.launch_ball()
                 time.sleep(40)
-            self.set_state(GlobalController.State.Attempting_Ramp)
+            self.set_state(GlobalController.State.Exploratory_Mapping)
 
         elif bot_current_state == GlobalController.State.Attempting_Ramp:
             if(self.ramp_location is None):
